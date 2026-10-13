@@ -9,6 +9,7 @@
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
+#include "strata/kernels/cpu/ptq1_0.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/tq_cpu.hpp"
@@ -172,6 +173,37 @@ bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
+    // Scion PTQ1_0 (ggml type 143): not in ggml's type table, so its geometry is defined here -
+    // 128-value blocks, 28 bytes (qs[24] staged base-3 trits, qh[2], fp16 d).  The activation is ggml
+    // Q8_K (256 values); one activation block covers two weight blocks.
+    if (gu_type == 143 || d_type == 143) {
+        if (gu_type != 143 || d_type != 143) {
+            err = "native experts: PTQ1_0 must be the type of both gate/up and down";
+            return false;
+        }
+        if (n_embd % 128 != 0 || n_ff % 128 != 0) {
+            err = "native experts: expert geometry is not whole PTQ1_0 blocks";
+            return false;
+        }
+        f.gu_type = 143;
+        f.d_type = 143;
+        f.gu_act = (int) GGML_TYPE_Q8_K;
+        f.d_act = (int) GGML_TYPE_Q8_K;
+        f.n_embd = n_embd;
+        f.n_ff = n_ff;
+        f.gu_row = (size_t) (n_embd / 128) * 28;
+        f.d_row = (size_t) (n_ff / 128) * 28;
+        f.up_off = f.gu_row * (size_t) n_ff;
+        f.down_off = 2 * f.up_off;
+        f.bytes = f.down_off + f.d_row * (size_t) n_embd;
+        f.act_bytes = ggml_row_size(GGML_TYPE_Q8_K, n_embd);
+        f.h_bytes = ggml_row_size(GGML_TYPE_Q8_K, n_ff);
+        if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
+            err = "native experts: activation larger than the pool's buffers";
+            return false;
+        }
+        return true;
+    }
     // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
     // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
     // are known here, and their rows run on tq_cpu.hpp.
@@ -433,6 +465,10 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
+    if (f.gu_type == 143) {   // Scion PTQ1_0: the dedicated CPU kernel (no ggml type behind it)
+        ptq1_0_gu_rows(blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
     // KQ matches the ggml AVX2/FMA dot; other builds keep their own singleton arithmetic.
     if (kq && f.gu_type == 12 && nt >= 2 &&
         (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // one token: ggml's own dot below (the same bits, less overhead)
@@ -521,6 +557,10 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
     static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
+    if (f.d_type == 143) {   // Scion PTQ1_0 down rows: the dedicated CPU kernel
+        ptq1_0_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.

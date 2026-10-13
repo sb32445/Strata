@@ -64,6 +64,7 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/core/corrections.hpp"
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
@@ -1066,6 +1067,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
+        corr_t16_ = b.take<uint16_t>(T * (uint64_t) strata::kernels::kLoraCorrMaxRank);
+        corr_x16_ = b.take<uint16_t>(std::min<uint64_t>(T, (uint64_t) strata::kernels::kLoraCorrRoundRows) *
+                                      (uint64_t) max_in);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
         // the q8_1 activations of one token group (or one column chunk of the head): at most kVerifyMaxT columns
@@ -1787,6 +1791,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
+                if (!corr_apply(*wt_, *g_, l, CorrSite::SsmOut, n, y_ + (size_t) tb * ZV, corr_x16_,
+                                corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
+                    return false;
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
@@ -2167,6 +2174,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 14, grp);
                 quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
+                if (!corr_apply(*wt_, *g_, l, CorrSite::AttnOutput, n, attn32_ + tb * NH * HD, corr_x16_,
+                                corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
+                    return false;
             }
         } catch (const std::exception& e) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
@@ -2476,6 +2486,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
+        if (!corr_apply(*wt_, *g_, l, CorrSite::FfnMoeOut, n, mixed_ + (size_t) tb * N, corr_x16_,
+                        corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
+            return false;
         stamp(l, 24, grp);
         if (tap_on_ && (!batch_rec_ || tap_batch_) && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
             // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of
