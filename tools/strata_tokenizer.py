@@ -464,7 +464,7 @@ class PromptEncoder:
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory
-def extract(gguf_path, out_dir) -> dict:
+def extract(gguf_path, out_dir, template=None) -> dict:
     """Write the tokenizer into `<out_dir>/tokenizer/` so the engine never opens the weight shards for it."""
     out = pathlib.Path(out_dir) / "tokenizer"
     out.mkdir(parents=True, exist_ok=True)
@@ -490,6 +490,10 @@ def extract(gguf_path, out_dir) -> dict:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from gguf_reader import GGUFFile
     tpl = GGUFFile(pathlib.Path(gguf_path)).metadata.get("tokenizer.chat_template")
+    if template:
+        # The model may not carry the template in its GGUF (the Scion Q6_K release does not), and a stale
+        # placeholder must not survive a rebuild.  Use the supplied template, verbatim.
+        tpl = pathlib.Path(template).read_text(encoding="utf-8")
     if tpl:
         (out / "chat_template.jinja").write_text(tpl, encoding="utf-8", newline="\n")
     return cfg
@@ -500,9 +504,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--template", help="a chat template to write when the GGUF carries none (or to override it)")
     ap.add_argument("--check", action="store_true", help="round-trip a corpus and report")
     args = ap.parse_args()
-    cfg = extract(args.gguf, args.out)
+    cfg = extract(args.gguf, args.out, args.template)
     print("tokenizer/: vocab %d, merges %d, pre %s, specials %s"
           % (cfg["vocab_size"], cfg["n_merges"], cfg["pre"], cfg["special_ids"]))
     if args.check:

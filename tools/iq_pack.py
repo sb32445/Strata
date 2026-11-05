@@ -602,6 +602,9 @@ def main() -> int:
                          "(rounds weights; leaves experts and the PLE table unchanged)")
     ap.add_argument("--experts-bin", action="store_true",
                     help="also write experts.bin (the engine otherwise reads the experts from the GGUF itself)")
+    ap.add_argument("--chat-template",
+                    help="write this chat template into tokenizer/ (needed when the GGUF carries none; "
+                         "otherwise it overrides the model's own)")
     a = ap.parse_args()
     if a.compat_bf16 and a.base:
         ap.error("--compat-bf16 cannot reuse --base dense weights")
@@ -703,9 +706,11 @@ def main() -> int:
         rc = index_standalone(src, out, model, a.compat_bf16)
     if rc:
         return rc
-    if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():
-        subprocess.run([sys.executable, str(HERE / "strata_tokenizer.py"), "--gguf", str(src), "--out", str(out)],
-                       check=True)   # writes <out>/tokenizer/
+    if a.chat_template or not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():
+        cmd = [sys.executable, str(HERE / "strata_tokenizer.py"), "--gguf", str(src), "--out", str(out)]
+        if a.chat_template:
+            cmd += ["--template", str(pathlib.Path(a.chat_template).absolute())]
+        subprocess.run(cmd, check=True)   # writes <out>/tokenizer/
 
     # ---- the experts.  native_experts.txt is written to a temporary name and renamed only when every layer is
     # in: a stop part-way (a layer split across shards, #171) left a partial native_experts.txt that the next setup

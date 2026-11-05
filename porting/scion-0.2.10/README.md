@@ -22,6 +22,21 @@ The patch is the reviewable form of the branch. It is a 3-way port of the 176B w
 The patch is one file because the stages share files (`CMakeLists.txt`, `prefill.cpp`, `iq_kernels.cu`),
 so splitting it into independently applying patches would be fiction. The stage table is the review map.
 
+## Pack note: the chat template
+
+The Q6_K release's GGUF does **not** carry `tokenizer.chat_template`. A pack built from it without a
+template can end up with a one-line placeholder (`{{ messages[-1].content }}`), and thinking mode then
+degenerates into repeating the prompt. Build the pack with the Qwen3.8 template explicitly:
+
+```sh
+python3 tools/iq_pack.py --gguf "$SCION_MODELS/Scion-FlashNext-176B-A6B-Q6_K.gguf" \
+  --out "$SCION_MODELS/pack-q6k" --compat-bf16 \
+  --chat-template "$SCION_MODELS/pack-q2-ab/tokenizer/chat_template.jinja"
+```
+
+`--chat-template` overrides a template in the GGUF and also replaces an existing pack's placeholder;
+`tools/strata_tokenizer.py --template FILE` does the same for a tokenizer-only extraction.
+
 ## Validation on this box
 
 Build: HIP gfx1100, ROCm 7.2, `STRATA_BUILD_TESTS=ON`, 392 targets, exit 0.
