@@ -71,3 +71,13 @@ and `ple_reader_selftest`.
 The synthetic GGUFs live outside the repo (`/tmp/opencode/scion-fixtures/`) and are not committed.
 Regenerate them with a minimal GGUF v3 writer; the parity tools need no metadata, only the tensor
 names, shapes and types listed above.
+
+## F16 teacher control (not run on this box)
+
+The F16 body is the fidelity variant, but it is not a native quantized body. A pack built from it
+starts in Strata, and the native expert layout loads, but prefill rejects
+`blk.0.attn_qkv.weight` with `no native GGUF blocks`: the native prefill/verify path expects native
+dense/head/BF16 projections, and the F16 body supplies none. Running it needs engine work for a
+packed body inside a native expert pack, or the Prism `qwen4exp` fork on a host with at least 64 GB
+RAM (this box has ~30 GB). The F16 GGUF is kept; its 35 GB derived pack was removed.
+
