@@ -1,3 +1,13 @@
+> **Scion fork of Strata.** `main` is an unmodified mirror of
+> [Niko1221/Strata](https://github.com/Niko1221/Strata). This branch,
+> `scion-0.2.10`, ports the Scion 176B FlashNext support onto upstream **v0.2.10**:
+> `TQ1_0_g128` (type 143) ternary expert kernels on CPU and GPU, the embedded F16
+> correction branches, the Q4_0 PLE path, and the correction hooks in chunk-major
+> prefill. Upstream v0.2.10 has no Scion kernels. Build, test and branch policy:
+> [`PORTING.md`](PORTING.md) · [`porting/scion-0.2.10/`](porting/scion-0.2.10/).
+> 35B Scion support remains on the legacy `scion-0.1.44` branch. This is not an
+> upstream release, and it is not the separate `Strata-Lite` fork.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
