@@ -44,7 +44,7 @@ source of truth; the patches are for review and for the next port.
 
 | # | Series | What it adds |
 |---|---|---|
-| 0001 | `artifact-formats` | `PTQ1_0` (type 143) block geometry in the vendored `ggml-common.h`; GGUF reader name/geometry (upstream already reserves 143 as `PTQ1_0`, 128/28). |
+| 0001 | `artifact-formats` | `PTQ1_0` (type 143) block struct in the vendored `ggml-common.h`. Upstream already names and sizes 143 as `PTQ1_0` (128/28), so the reader and Python tools need no change. |
 | 0002 | `ptq1-experts` | CPU base-3 decode and Q8_K dot; `native_expert` routing; CUDA `Fmt<143>` / `Split<143>` / `vec_dot_ptq1_0`; prompt-path dequant; `ptq1_0_parity`. |
 | 0003 | `corrections` | `lora_corr` A/B kernels; `core/corrections` validation and dispatch; decode, prefill and verify hooks; `gate_attn` f32 post-gate output; `lora_corr_parity`. |
 | 0004 | `qwen4exp-runtime` | `generate` startup validation and the correction branches on the real engine path; PLE Q4_0 (upstream v0.2.10 already has the format, so no PLE patch is needed). |
@@ -91,7 +91,6 @@ The 176B series touches these files, which upstream also moves quickly:
 
 ```
 CMakeLists.txt
-include/strata/artifact/gguf_reader.hpp
 include/strata/core/corrections.hpp
 include/strata/core/layer.hpp
 include/strata/core/verify.hpp
@@ -105,7 +104,6 @@ src/kernels/cpu/native_expert.cpp
 src/kernels/cpu/ptq1_0.cpp
 src/kernels/cuda/iq_kernels.cu
 src/kernels/cuda/lora_corr.cu
-src/kernels/ngram.cpp
 src/kernels/ptq1_0_parity.cpp
 src/kernels/lora_corr_parity.cpp
 src/kernels/ple_q4_parity.cpp
@@ -113,7 +111,6 @@ src/prefill/kernels.cu
 src/prefill/prefill.cpp
 src/program/generate.cpp
 third_party/ggml/ggml-common.h
-tools/gguf_reader.py
 ```
 
 Expected conflicts on the next port: the `Fmt`/`Split` format lists and the `STRATA_GU/D/MMVQ_FMTS`

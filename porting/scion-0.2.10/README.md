@@ -13,7 +13,7 @@ The patch is the reviewable form of the branch. It is a 3-way port of the 176B w
 
 | Stage | Paths | Purpose |
 |---|---|---|
-| `0001-artifact-formats` | `include/strata/artifact/gguf_reader.hpp`, `third_party/ggml/ggml-common.h`, `tools/gguf_reader.py` | PTQ1_0 type 143: 128-value / 28-byte block; upstream already names and sizes it. |
+| `0001-artifact-formats` | `third_party/ggml/ggml-common.h` | PTQ1_0 type 143: the 128-value / 28-byte block struct the kernels decode. Upstream already names and sizes it in the GGUF readers. |
 | `0002-ptq1-experts` | `include/strata/kernels/cpu/ptq1_0.hpp`, `src/kernels/cpu/ptq1_0.cpp`, `src/kernels/cpu/native_expert.cpp`, `src/kernels/cuda/iq_kernels.cu`, `src/kernels/ptq1_0_parity.cpp` | CPU base-3 decode + Q8_K dot, native-expert routing, CUDA dot/split/prompt dequant, parity tool. |
 | `0003-corrections` | `include/strata/core/corrections.hpp`, `src/core/corrections.cpp`, `include/strata/kernels/lora_corr.hpp`, `src/kernels/cuda/lora_corr.cu`, `src/core/layer.cpp`, `src/core/verify.cpp`, `src/prefill/prefill.cpp`, `src/prefill/kernels.cu`, `src/kernels/lora_corr_parity.cpp` | `out += B(Ax)` at the three block outputs; f32 post-gate path for QSA. |
 | `0004-qwen4exp-runtime` | `src/program/generate.cpp`, `include/strata/prefill/kernels.hpp`, `src/prefill/kernels.cu` | Startup validation with the real geometry; correction dispatch in chunk-major prefill. |
