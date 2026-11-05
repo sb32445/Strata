@@ -1,0 +1,2538 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8659bf89..6e54e15f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -519,6 +519,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+                           src/kernels/cuda/verify_kernels.cu
+                           src/kernels/cuda/dflash2.cu
+                           src/kernels/cuda/iq_kernels.cu
++                          src/kernels/cuda/lora_corr.cu
+                           src/kernels/ngram.cpp
+                           src/ngram/ple_reader.cpp
+                           src/platform/direct_file.cpp)
+@@ -704,7 +705,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+     src/core/remote_expert_opt.cu
+     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
+     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
+-    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
++    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
++    src/core/corrections.cpp)
+   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+@@ -2117,7 +2119,7 @@ if(STRATA_NATIVE_EXPERTS)
+   endif()
+   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
+   # one-pass static linking has no cycle to resolve)
+-  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)
++  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/ptq1_0.cpp)
+   if(STRATA_CPU_X86)
+     target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
+                                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+@@ -2706,6 +2708,25 @@ if(STRATA_NATIVE_EXPERTS)
+   if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS)
+     add_executable(ple_q5_parity src/kernels/ple_q5_parity.cpp)
+     target_link_libraries(ple_q5_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
++    # Scion tables: Q4_0 PLE rows through PleTable (direct reader) vs ggml's reference
++    add_executable(ple_q4_parity src/kernels/ple_q4_parity.cpp)
++    target_link_libraries(ple_q4_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
++    # Scion experts: PTQ1_0 rows through native_fmt / native_gu_rows (CPU) and the device kernels
++    add_executable(ptq1_0_parity src/kernels/ptq1_0_parity.cpp)
++    target_include_directories(ptq1_0_parity PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(ptq1_0_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
++    # Scion corrections: every lora_a/b pair of the artifact against the bit-exact host reduction
++    add_executable(lora_corr_parity src/kernels/lora_corr_parity.cpp)
++    target_include_directories(lora_corr_parity PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(lora_corr_parity PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
++    # Scion corrections: window-shape bench (rows 1..8, A/B breakdown) - measurement tool, not a test
++    add_executable(lora_corr_bench src/kernels/lora_corr_bench.cu)
++    target_include_directories(lora_corr_bench PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(lora_corr_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
++    # Scion corrections: hardware-vs-software f16 conversion bit check - measurement tool, not a test
++    add_executable(f16_hw_check src/kernels/f16_hw_check.cu)
++    target_include_directories(f16_hw_check PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(f16_hw_check PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+     add_executable(q5_projection_parity src/kernels/q5_projection_parity.cpp)
+     target_include_directories(q5_projection_parity PRIVATE ${_strata_gpu_include_directories})
+     target_link_libraries(q5_projection_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
+@@ -2713,6 +2734,27 @@ if(STRATA_NATIVE_EXPERTS)
+     add_executable(ple_fp8_parity src/kernels/ple_fp8_parity.cpp)
+     target_link_libraries(ple_fp8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+   endif()
++  if(STRATA_ENABLE_HIP AND STRATA_BUILD_TESTS)
++    # Scion tables: Q4_0 PLE rows through PleTable (direct reader) vs ggml's reference
++    add_executable(ple_q4_parity src/kernels/ple_q4_parity.cpp)
++    target_link_libraries(ple_q4_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
++    # Scion experts: PTQ1_0 rows through native_fmt / native_gu_rows vs a float reference
++    add_executable(ptq1_0_parity src/kernels/ptq1_0_parity.cpp)
++    target_include_directories(ptq1_0_parity PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(ptq1_0_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
++    # Scion corrections: the runtime lora_a/b branch kernels on the real artifact
++    add_executable(lora_corr_parity src/kernels/lora_corr_parity.cpp)
++    target_include_directories(lora_corr_parity PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(lora_corr_parity PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
++    # Scion corrections: window-shape bench (rows 1..8, A/B breakdown) - measurement tool, not a test
++    add_executable(lora_corr_bench src/kernels/lora_corr_bench.cu)
++    target_include_directories(lora_corr_bench PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(lora_corr_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
++    # Scion corrections: hardware-vs-software f16 conversion bit check - measurement tool, not a test
++    add_executable(f16_hw_check src/kernels/f16_hw_check.cu)
++    target_include_directories(f16_hw_check PRIVATE ${_strata_gpu_include_directories})
++    target_link_libraries(f16_hw_check PRIVATE strata_kernels ${_strata_gpu_runtime_target})
++  endif()
+ endif()
+ 
+ if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/hit_cpu_order_parity.cu")
+diff --git a/include/strata/core/corrections.hpp b/include/strata/core/corrections.hpp
+new file mode 100644
+index 00000000..92741c25
+--- /dev/null
++++ b/include/strata/core/corrections.hpp
+@@ -0,0 +1,41 @@
++// include/strata/core/corrections.hpp - the runtime correction branches (see kernels/lora_corr.hpp).
++//
++// The engine applies the embedded adapter of a Scion release as three additive branches:
++//
++//   blk.N.ffn_moe_out.weight.lora_{a,b}   applied to the MoE block output, from the FFN input `bb.mixed`
++//   blk.N.ssm_out.weight.lora_{a,b}       applied to the GDN output,        from `b.y` (the ssm_out input)
++//   blk.N.attn_output.weight.lora_{a,b}   applied to the attention output,  from the gated attention
++//
++// `corr_validate` checks every pair the pack carries at startup - shapes, raw-f16 arena form, rank - so a
++// malformed adapter is refused before a token runs; a pack without corrections is valid and `corr_apply`
++// is a no-op.
++#pragma once
++
++#include "strata/core/layout.hpp"
++#include "strata/core/weights.hpp"
++#include "strata/kernels/lora_corr.hpp"
++
++#include <cstdint>
++#include <string>
++
++namespace strata::core {
++
++/// The three block-output sites.  The order is the scratch layout's, and nothing else's.
++enum class CorrSite : int { FfnMoeOut = 0, SsmOut = 1, AttnOutput = 2 };
++
++/// "ffn_moe_out.weight" / "ssm_out.weight" / "attn_output.weight" - the GGUF suffix before ".lora_a".
++const char* corr_site_name(CorrSite site);
++
++/// Every `blk.N.<site>.weight.lora_{a,b}` pair in `tables` must be raw f16 (2 B/elem), have a rank of at
++/// most `strata::kernels::kLoraCorrMaxRank`, and attach to the layer kind that has the projection (ssm_out
++/// to GDN layers, attn_output to QSA layers).  `branches` counts the pairs.  Returns false with `err` set to
++/// the first problem found.
++bool corr_validate(const WeightTable& tables, const ModelGeometry& g, int& branches, std::string& err);
++
++/// `out[row] += B (A x[row])` for `n_rows` rows, when layer `layer` carries the branch for `site`; a no-op
++/// otherwise.  `t16` must hold `n_rows * rank` f16 (rank <= kLoraCorrMaxRank) and `x16` must hold
++/// `min(n_rows, kLoraCorrRoundRows) * n_in` f16, both on the stream's device.
++bool corr_apply(const WeightTable& tables, const ModelGeometry& g, int64_t layer, CorrSite site, int64_t n_rows,
++                const float* x, uint16_t* x16, uint16_t* t16, float* out, void* stream, std::string& err);
++
++}  // namespace strata::core
+diff --git a/include/strata/core/layer.hpp b/include/strata/core/layer.hpp
+index 9e0361ac..0f2aa62a 100644
+--- a/include/strata/core/layer.hpp
++++ b/include/strata/core/layer.hpp
+@@ -463,6 +463,13 @@ struct BlockBuffers {
+     float* gr_rs = nullptr;                   ///< hc: the fused read's per-stream 1/rms
+     uint8_t* head_q8k = nullptr;              ///< `q8k_bytes(n_embd)`: the head's Q8_K activation image
+     strata::kernels::GrWorkspace gr;          ///< `gr_read`'s scratch
++    /// The runtime correction branches' rank-sized intermediate (`t16` of `out += B t16`), one row: the
++    /// branch input is one token's activation in the decode paths.  f16, because the A pass rounds its own
++    /// output and the B pass consumes it as f16.
++    uint16_t* corr_t16 = nullptr;
++    /// The correction branches' f16 rounding of one row of `x` (A's input operand).  One row, because the
++    /// decode paths call `corr_apply` with a single token; sized for the widest branch input.
++    uint16_t* corr_x16 = nullptr;
+ 
+     /// THE HALF-LEVEL C1 ORACLE, and it is a HOST buffer of `(2 * n_embd + 2 * hc + n_head * head_dim)` floats
+     /// PER LAYER: `[0, n_embd)` the attention half's `block_out`, `[n_embd, 2*n_embd)` the MoE half's, the two
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 258ba76e..5ade7d91 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -720,6 +720,8 @@ private:
+     void* arena_ = nullptr;
+     int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr, *commit_ = nullptr;
+     float *ple_ = nullptr, *emb_ = nullptr, *R_ = nullptr, *mixed_ = nullptr, *bo_ = nullptr;
++    uint16_t* corr_t16_ = nullptr;                            // T * kLoraCorrMaxRank f16: correction rank scratch
++    uint16_t* corr_x16_ = nullptr;                            // T * max_in: the corrections' f16 rounding of x
+     float *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *xn_ = nullptr;
+     uint8_t* xq_ = nullptr;                                   // T columns of q8_1
+     uint8_t* xil_ = nullptr;                                  // fork F4: the interleaved copy of xq_'s 2-4 columns
+diff --git a/include/strata/kernels/cpu/ptq1_0.hpp b/include/strata/kernels/cpu/ptq1_0.hpp
+new file mode 100644
+index 00000000..5dd78682
+--- /dev/null
++++ b/include/strata/kernels/cpu/ptq1_0.hpp
+@@ -0,0 +1,23 @@
++// src/kernels/cpu/ptq1_0.hpp - Scion PTQ1_0 (ggml type 143) expert rows on the CPU.
++//
++// Block: 128 values in 28 bytes - qs[24] (staged base-3 trits, 5/byte:
++// bytes 0..15 hold values n*16+m, bytes 16..23 hold 80+n*8+m), qh[2]
++// (values 120+n*2+h), fp16 d.  Activation: ggml Q8_K (256 values), one
++// block per two weight blocks; the dot uses the block-level d only, like the
++// iq_avx kernels.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace strata::kernels::cpu {
++
++void ptq1_0_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
++                    int nt, float* const* ff, int r0, int r1);
++void ptq1_0_down_rows(const uint8_t* blob, size_t d_row, int n, const void* const* hq,
++                      int nt, float* const* out, int r0, int r1);
++
++// Decode one 28-byte block to 128 trits in {-1, 0, +1}; exposed for parity tests.
++void ptq1_0_decode128(const uint8_t* block, int8_t* out128);
++
++}  // namespace strata::kernels::cpu
+diff --git a/include/strata/kernels/lora_corr.hpp b/include/strata/kernels/lora_corr.hpp
+new file mode 100644
+index 00000000..55fcaead
+--- /dev/null
++++ b/include/strata/kernels/lora_corr.hpp
+@@ -0,0 +1,40 @@
++// include/strata/kernels/lora_corr.hpp - the runtime correction branches of the Scion releases.
++//
++// The release GGUF carries an embedded adapter (`adapter.embedded = true`, rank 512, `adapter.lora.alpha = 0`
++// -> scale 1.0, applied at scale 1.0 by the fork) as 96 LoRA pairs on three [block] outputs:
++//
++//   blk.N.ffn_moe_out.weight.lora_{a,b}   the MoE block output, from the normalized FFN input   (all layers)
++//   blk.N.ssm_out.weight.lora_{a,b}       the GDN output projection, from its input activation  (36 layers)
++//   blk.N.attn_output.weight.lora_{a,b}   the attention output projection, from its input        (12 layers)
++//
++// Applying one branch is `out += B (A x)` with A [rank, n_in] and B [n_out, rank], both raw f16; the
++// activations are f32 and reach the kernels exactly as the reference's f32 tensors did.  The A pass rounds
++// x to f16 and writes its own result as f16 (`t16`); the B pass rounds B's factor to f16 - the same rule
++// llama.cpp's F16 matmuls apply - and accumulation is f32 in both passes.
++#pragma once
++
++#include <cstdint>
++
++namespace strata::kernels {
++
++/// The largest rank the engine's correction scratch is sized for (the release ships 512; the validator
++/// refuses anything larger rather than reading past the scratch).
++constexpr int64_t kLoraCorrMaxRank = 512;
++
++/// The x16 rounding scratch is filled at most this many rows at a time (`lora_corr_apply` loops over row
++/// chunks), so a caller's scratch must hold `min(n_rows, kLoraCorrRoundRows) * n_in` f16 values.  The cap
++/// bounds the scratch for the batched (prefill) path, where n_rows is thousands and the full x16 image
++/// would be tens of megabytes.
++constexpr int64_t kLoraCorrRoundRows = 1024;
++
++/// Rounds x to f16 into x16 with the repo's RNE converter (`f16_from_f32`), the A pass's operand rule.
++void lora_corr_round_x(const float* x, uint16_t* x16, int64_t n, void* stream);
++
++/// `t16` = [n_rows][rank] f16 scratch (A's output, already rounded); `out` = [n_rows][n_out] receives
++/// `+= B t16`; `x` = [n_rows][n_in]; `x16` is a caller-owned scratch of
++/// `min(n_rows, kLoraCorrRoundRows) * n_in` f16 that this call fills.  Runs on `stream`.  A null `a` or
++/// `b` is a no-op (a pack without corrections).  `n_in` and `rank` must be multiples of 8 (uint4 rows).
++void lora_corr_apply(const uint16_t* a, const uint16_t* b, const float* x, uint16_t* x16, uint16_t* t16, float* out,
++                     int64_t n_rows, int64_t n_in, int64_t rank, int64_t n_out, void* stream);
++
++}  // namespace strata::kernels
+diff --git a/include/strata/prefill/kernels.hpp b/include/strata/prefill/kernels.hpp
+index 07182c10..8f21e8b3 100644
+--- a/include/strata/prefill/kernels.hpp
++++ b/include/strata/prefill/kernels.hpp
+@@ -155,8 +155,11 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
+                    void* stream);
+ /// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
+ void split_q(const float* q_full, float* q, int64_t T, void* stream);
+-/// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)
+-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16 = 0);
++/// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized;
++/// `ld16` is its leading dimension, default 24*256); `out32` (optional) receives the same product in f32
++/// for the correction branches.
++void gate_attn(const float* attn, const float* q_full, uint16_t* out16, float* out32, int64_t T, void* stream,
++               int64_t ld16 = 0);
+ 
+ /// K and V of T consecutive cells (positions pos0..pos0+T-1; K normed and rotated) into the paged pools: FP16
+ /// (`k_pool`/`v_pool`) or INT8 codes + FP16 scale per 64 (`k_q`...), the decode append's arithmetic.
+diff --git a/src/core/corrections.cpp b/src/core/corrections.cpp
+new file mode 100644
+index 00000000..7183057e
+--- /dev/null
++++ b/src/core/corrections.cpp
+@@ -0,0 +1,116 @@
++// src/core/corrections.cpp - validation and dispatch for the runtime correction branches.
++#include "strata/core/corrections.hpp"
++
++#include "strata/kernels/lora_corr.hpp"
++
++#include <cstdio>
++
++namespace strata::core {
++namespace {
++
++const char* site_suffix(CorrSite site) {
++    switch (site) {
++        case CorrSite::FfnMoeOut: return "ffn_moe_out.weight";
++        case CorrSite::SsmOut: return "ssm_out.weight";
++        case CorrSite::AttnOutput: return "attn_output.weight";
++    }
++    return "";
++}
++
++struct SiteDims {
++    int64_t in = 0, out = 0;
++    bool qsa_only = false, gdn_only = false;
++};
++
++SiteDims site_dims(const ModelGeometry& g, CorrSite site) {
++    switch (site) {
++        case CorrSite::FfnMoeOut: return {g.n_embd, g.n_embd, false, false};
++        case CorrSite::SsmOut: return {g.ssm_value_dim, g.n_embd, false, true};
++        case CorrSite::AttnOutput: return {g.n_head * g.head_dim, g.n_embd, true, false};
++    }
++    return {};
++}
++
++/// The one arena form the correction kernels read: raw f16 rows, 2 bytes per element.  A 4 B/elem
++/// promotion in the arena is refused rather than half-read (the same reasoning as check_layer's byte check).
++bool raw_f16(const WeightRef& r) {
++    return (r.kind == WeightKind::Verbatim || r.kind == WeightKind::F16InF32) &&
++           r.bytes == (uint64_t) r.elements * 2 && r.ne0 > 0 && r.ne1 > 0;
++}
++
++}  // namespace
++
++const char* corr_site_name(CorrSite site) { return site_suffix(site); }
++
++bool corr_validate(const WeightTable& tables, const ModelGeometry& g, int& branches, std::string& err) {
++    branches = 0;
++    for (int64_t layer = 0; layer < g.n_layers; ++layer) {
++        const LayerView v(tables, layer);
++        // layout.hpp's rule, not a second layer map: full attention is
++        // `layer % qsa_interval == qsa_interval - 1` (layers 3, 7, ... 47)
++        const bool qsa = is_qsa_layer(g, layer);
++        for (int s = 0; s < 3; ++s) {
++            const CorrSite site = (CorrSite) s;
++            const std::string a_name = std::string(site_suffix(site)) + ".lora_a";
++            const std::string b_name = std::string(site_suffix(site)) + ".lora_b";
++            const WeightRef* a = v.get(a_name.c_str());
++            const WeightRef* b = v.get(b_name.c_str());
++            if (a == nullptr && b == nullptr) continue;
++            if (a == nullptr || b == nullptr) {
++                err = v.name((a == nullptr ? a_name : b_name).c_str()) +
++                      " has no " + (a == nullptr ? "lora_a" : "lora_b") + " partner";
++                return false;
++            }
++            const SiteDims d = site_dims(g, site);
++            if ((d.qsa_only && !qsa) || (d.gdn_only && qsa)) {
++                err = v.name(a_name.c_str()) + ": this projection does not exist on layer " +
++                      std::to_string(layer) + (qsa ? " (a QSA layer)" : " (a GDN layer)");
++                return false;
++            }
++            if (!raw_f16(*a) || !raw_f16(*b)) {
++                err = v.name(a_name.c_str()) + ": the correction factors must be raw f16 (2 B/element)";
++                return false;
++            }
++            if (a->ne1 > strata::kernels::kLoraCorrMaxRank) {
++                err = v.name(a_name.c_str()) + ": rank " + std::to_string(a->ne1) + " is over the engine's " +
++                      std::to_string(strata::kernels::kLoraCorrMaxRank) + " scratch";
++                return false;
++            }
++            if (a->ne0 % 8 != 0 || a->ne1 % 8 != 0) {
++                err = v.name(a_name.c_str()) + ": n_in " + std::to_string(a->ne0) + " / rank " +
++                      std::to_string(a->ne1) + " is not a multiple of 8 (the passes read uint4 rows)";
++                return false;
++            }
++            if (a->ne0 != d.in || a->ne1 != b->ne0 || b->ne1 != d.out) {
++                char buf[320];
++                std::snprintf(buf, sizeof buf,
++                              "%s: expected a [%lld, rank] / b [rank, %lld], got a [%lld, %lld] / b [%lld, %lld]",
++                              v.name(a_name.c_str()).c_str(), (long long) d.in, (long long) d.out,
++                              (long long) a->ne0, (long long) a->ne1, (long long) b->ne0, (long long) b->ne1);
++                err = buf;
++                return false;
++            }
++            ++branches;
++        }
++    }
++    return true;
++}
++
++bool corr_apply(const WeightTable& tables, const ModelGeometry& g, int64_t layer, CorrSite site, int64_t n_rows,
++                const float* x, uint16_t* x16, uint16_t* t16, float* out, void* stream, std::string& err) {
++    const LayerView v(tables, layer);
++    const std::string a_name = std::string(site_suffix(site)) + ".lora_a";
++    const std::string b_name = std::string(site_suffix(site)) + ".lora_b";
++    const WeightRef* a = v.get(a_name.c_str());
++    const WeightRef* b = v.get(b_name.c_str());
++    if (a == nullptr && b == nullptr) return true;   // a pack without corrections
++    if (a == nullptr || b == nullptr || !raw_f16(*a) || !raw_f16(*b) || a->ne1 > strata::kernels::kLoraCorrMaxRank) {
++        err = v.name(a_name.c_str()) + ": the correction branch is malformed (corr_validate should have refused it)";
++        return false;
++    }
++    strata::kernels::lora_corr_apply((const uint16_t*) a->data, (const uint16_t*) b->data, x, x16, t16, out, n_rows,
++                                     a->ne0, a->ne1, b->ne1, stream);
++    return true;
++}
++
++}  // namespace strata::core
+diff --git a/src/core/layer.cpp b/src/core/layer.cpp
+index c6e2831a..668a0adc 100644
+--- a/src/core/layer.cpp
++++ b/src/core/layer.cpp
+@@ -3,6 +3,7 @@
+ #include "strata/core/layer.hpp"
+ #include "strata/core/pin_budget.hpp"
+ #include "strata/core/native_dense.hpp"
++#include "strata/core/corrections.hpp"
+ #include "strata/core/native_head.hpp"
+ #include "strata/kernels/bf16_bits.hpp"
+ #include "strata/kernels/bf16_gemv.hpp"
+@@ -1439,8 +1440,12 @@ n += (uint64_t) g.hc * 4 * 2 + 32;
+ // inject2, gr_rs
+ n += q8k_bytes(g.n_embd);
+ // head_q8k
+-n += strata::kernels::gr_workspace_bytes(s);    return align_up16(n) + 256;}
+-uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.hc * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.hc);    b.inject2 = c.take<float>((uint64_t) g.hc);    b.gr_rs = c.take<float>((uint64_t) g.hc);    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(strata::kernels::gr_workspace_bytes(s));    strata::kernels::gr_workspace_init(s, grw, b.gr);    return c.used;}
++n += strata::kernels::gr_workspace_bytes(s);    n += (uint64_t) strata::kernels::kLoraCorrMaxRank * 2;
++// correction branch t16
++n += (uint64_t) std::max({(int64_t) g.n_embd, (int64_t) g.ssm_value_dim, (int64_t) g.n_head * g.head_dim}) * 2;
++// correction branch x16 (one row; the decode paths apply one token at a time)
++    return align_up16(n) + 256;}
++uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.hc * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.hc);    b.inject2 = c.take<float>((uint64_t) g.hc);    b.gr_rs = c.take<float>((uint64_t) g.hc);    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(strata::kernels::gr_workspace_bytes(s));    strata::kernels::gr_workspace_init(s, grw, b.gr);    b.corr_t16 = c.take<uint16_t>((uint64_t) strata::kernels::kLoraCorrMaxRank);    b.corr_x16 = c.take<uint16_t>((uint64_t) std::max({(int64_t) g.n_embd, (int64_t) g.ssm_value_dim, (int64_t) g.n_head * g.head_dim}));    return c.used;}
+ // ---- THE HALF-LEVEL C1 ORACLE.  `dump` is a HOST buffer of `2 * n_embd + 2 * hc + n_head * head_dim` floats
+ // per layer; this enqueues one slice of it as a device-to-host copy.  **IT RUNS INSIDE THE CAPTURE**, which is
+ // the point: the copy becomes a node of that layer's graph and replays with it, so the layer functions stay one
+@@ -1559,7 +1564,7 @@ st_begin(layer, 0, stream);
+     }
+     st_end(layer, 0, stream);    dump_half(bb, g, layer, bb.inject, 2 * g.n_embd, g.hc, stream);        }
+     if (run1) {
+-    st_begin(layer, 1, stream);    if (qsa) {        if (!qsa_layer(tables, g, layer, pos, pos_base, qst, qb, bb.mixed, bb.block_out, stream, err,                            bb.dump))            return false;    } else {        if (!gdn_layer(tables, g, layer, gb, bb.mixed, bb.block_out, stream, err)) return false;    }    st_end(layer, 1, stream);    dump_half(bb, g, layer, bb.block_out, 0, g.n_embd, stream);        }
++    st_begin(layer, 1, stream);    if (qsa) {        if (!qsa_layer(tables, g, layer, pos, pos_base, qst, qb, bb.mixed, bb.block_out, stream, err,                            bb.dump))            return false;    } else {        if (!gdn_layer(tables, g, layer, gb, bb.mixed, bb.block_out, stream, err)) return false;    }    if (!corr_apply(tables, g, layer, qsa ? CorrSite::AttnOutput : CorrSite::SsmOut, 1, qsa ? qb.attn32 : gb.y, bb.corr_x16, bb.corr_t16, bb.block_out, stream, err)) return false;    st_end(layer, 1, stream);    dump_half(bb, g, layer, bb.block_out, 0, g.n_embd, stream);        }
+     if (run2) {
+     st_begin(layer, 2, stream);    if (!fused) gr_write(R, bb.block_out, bb.inject, gs, R, stream);    st_end(layer, 2, stream);
+ // ---- half 2, UP TO AND INCLUDING THE ROUTER.  `gr_read` leaves the normed activation in `bb.mixed` and
+@@ -1625,6 +1630,7 @@ bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t
+ st_begin(layer, 5, stream);
+     if (g_shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
+                        : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err)) return false;
++    if (!corr_apply(tables, g, layer, CorrSite::FfnMoeOut, 1, bb.mixed, bb.corr_x16, bb.corr_t16, bb.block_out, stream, err)) return false;
+     st_end(layer, 5, stream);    dump_half(bb, g, layer, bb.block_out, (uint64_t) g.n_embd, g.n_embd, stream);    dump_half(bb, g, layer, bb.inject, (uint64_t) 2 * g.n_embd + g.hc, g.hc, stream);    st_begin(layer, 6, stream);
+     const bool steer = strata::kernels::cvec().covers(layer);   // --control-vector-scaled: after this write
+     try {
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 47977c15..224b870c 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -64,6 +64,7 @@
+ #include "strata/kernels/s2_expert_grouped.hpp"
+ #include "strata/kernels/sampler.hpp"
+ #include "strata/core/progress.hpp"
++#include "strata/core/corrections.hpp"
+ #include "strata/kernels/shared_expert.hpp"
+ #include "strata/kernels/verify_kernels.hpp"
+ #if defined(STRATA_HAVE_DFLASH2)
+@@ -1066,6 +1067,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
+         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
+         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
++        corr_t16_ = b.take<uint16_t>(T * (uint64_t) strata::kernels::kLoraCorrMaxRank);
++        corr_x16_ = b.take<uint16_t>(std::min<uint64_t>(T, (uint64_t) strata::kernels::kLoraCorrRoundRows) *
++                                      (uint64_t) max_in);
+         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
+         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
+         // the q8_1 activations of one token group (or one column chunk of the head): at most kVerifyMaxT columns
+@@ -1787,6 +1791,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+                 if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
+                 else il_ready = false;
+                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
++                if (!corr_apply(*wt_, *g_, l, CorrSite::SsmOut, n, y_ + (size_t) tb * ZV, corr_x16_,
++                                corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
++                    return false;
+             } else {
+                 // ======================= QSA =======================
+                 const int64_t qi = qsa_idx[(size_t) l];
+@@ -2167,6 +2174,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+                 stamp(l, 14, grp);
+                 quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
+                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
++                if (!corr_apply(*wt_, *g_, l, CorrSite::AttnOutput, n, attn32_ + tb * NH * HD, corr_x16_,
++                                corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
++                    return false;
+             }
+         } catch (const std::exception& e) {
+             err = "verify layer " + std::to_string(l) + ": " + e.what();
+@@ -2476,6 +2486,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+         }
+         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
+                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
++        if (!corr_apply(*wt_, *g_, l, CorrSite::FfnMoeOut, n, mixed_ + (size_t) tb * N, corr_x16_,
++                        corr_t16_ + (size_t) tb * strata::kernels::kLoraCorrMaxRank, bo_ + tb * N, cs, err))
++            return false;
+         stamp(l, 24, grp);
+         if (tap_on_ && (!batch_rec_ || tap_batch_) && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+             // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of
+diff --git a/src/kernels/cpu/native_expert.cpp b/src/kernels/cpu/native_expert.cpp
+index 80fb63de..711b145e 100644
+--- a/src/kernels/cpu/native_expert.cpp
++++ b/src/kernels/cpu/native_expert.cpp
+@@ -9,6 +9,7 @@
+ #include "strata/kernels/cpu/kq_avx2.hpp"
+ #include "strata/kernels/cpu/nvfp4_avx2.hpp"
+ #include "strata/kernels/cpu/nvfp4_avx512.hpp"
++#include "strata/kernels/cpu/ptq1_0.hpp"
+ #include "strata/kernels/cpu/expert_layout.hpp"
+ #include "strata/kernels/cpu/hadamard.hpp"
+ #include "strata/kernels/cpu/tq_cpu.hpp"
+@@ -172,6 +173,37 @@ bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type
+ 
+ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
+     init_once();
++    // Scion PTQ1_0 (ggml type 143): not in ggml's type table, so its geometry is defined here -
++    // 128-value blocks, 28 bytes (qs[24] staged base-3 trits, qh[2], fp16 d).  The activation is ggml
++    // Q8_K (256 values); one activation block covers two weight blocks.
++    if (gu_type == 143 || d_type == 143) {
++        if (gu_type != 143 || d_type != 143) {
++            err = "native experts: PTQ1_0 must be the type of both gate/up and down";
++            return false;
++        }
++        if (n_embd % 128 != 0 || n_ff % 128 != 0) {
++            err = "native experts: expert geometry is not whole PTQ1_0 blocks";
++            return false;
++        }
++        f.gu_type = 143;
++        f.d_type = 143;
++        f.gu_act = (int) GGML_TYPE_Q8_K;
++        f.d_act = (int) GGML_TYPE_Q8_K;
++        f.n_embd = n_embd;
++        f.n_ff = n_ff;
++        f.gu_row = (size_t) (n_embd / 128) * 28;
++        f.d_row = (size_t) (n_ff / 128) * 28;
++        f.up_off = f.gu_row * (size_t) n_ff;
++        f.down_off = 2 * f.up_off;
++        f.bytes = f.down_off + f.d_row * (size_t) n_embd;
++        f.act_bytes = ggml_row_size(GGML_TYPE_Q8_K, n_embd);
++        f.h_bytes = ggml_row_size(GGML_TYPE_Q8_K, n_ff);
++        if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
++            err = "native experts: activation larger than the pool's buffers";
++            return false;
++        }
++        return true;
++    }
+     // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
+     // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
+     // are known here, and their rows run on tq_cpu.hpp.
+@@ -433,6 +465,10 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
+     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
+     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
+     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
++    if (f.gu_type == 143) {   // Scion PTQ1_0: the dedicated CPU kernel (no ggml type behind it)
++        ptq1_0_gu_rows(blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
++        return;
++    }
+     // KQ matches the ggml AVX2/FMA dot; other builds keep their own singleton arithmetic.
+     if (kq && f.gu_type == 12 && nt >= 2 &&
+         (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // one token: ggml's own dot below (the same bits, less overhead)
+@@ -521,6 +557,10 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void*
+     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
+     static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
+     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
++    if (f.d_type == 143) {   // Scion PTQ1_0 down rows: the dedicated CPU kernel
++        ptq1_0_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
++        return;
++    }
+     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
+     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
+     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
+diff --git a/src/kernels/cpu/ptq1_0.cpp b/src/kernels/cpu/ptq1_0.cpp
+new file mode 100644
+index 00000000..09e8f788
+--- /dev/null
++++ b/src/kernels/cpu/ptq1_0.cpp
+@@ -0,0 +1,157 @@
++// src/kernels/cpu/ptq1_0.cpp - Scion PTQ1_0 (type 143) expert rows on the CPU.
++// The decode is a 1:1 port of the fork's dequantize_row_ptq1_0 (ggml-quants.c),
++// which the scion packer's tests prove the inverse of; the dot is scalar and
++// ISA-independent on purpose (correctness first; SIMD/GPU kernels follow).
++#include "strata/kernels/cpu/ptq1_0.hpp"
++
++#define GGML_COMMON_DECL_CPP
++#define GGML_COMMON_IMPL_CPP
++#include "ggml-common.h"                // block_q8_K (the vendored block definitions)
++#include "strata/artifact/dequant.hpp"  // fp16_to_fp32 / read_u16
++
++#include <cmath>
++#include <cstring>
++
++namespace strata::kernels::cpu {
++namespace {
++
++constexpr int kQK = 128;   // values per PTQ1_0 block
++constexpr int kBB = 28;    // bytes per PTQ1_0 block
++constexpr int kQ8K = 256;  // values per Q8_K activation block
++
++// values 0..79 from qs[0..15]: element n*16 + m, trit n most significant
++// first, the uint8 truncation of byte * 3^n exactly as in the C reference.
++inline void decode_stage16(const uint8_t* qs, int8_t* v) {
++    static const uint8_t pow3[5] = {1, 3, 9, 27, 81};
++    for (int n = 0; n < 5; ++n) {
++        for (int m = 0; m < 16; ++m) {
++            const uint8_t q = (uint8_t) (qs[m] * pow3[n]);
++            const int xi = ((int) q * 3) >> 8;
++            v[n * 16 + m] = (int8_t) (xi - 1);
++        }
++    }
++}
++
++inline void decode_stage8(const uint8_t* qs, int8_t* v) {
++    static const uint8_t pow3[5] = {1, 3, 9, 27, 81};
++    for (int n = 0; n < 5; ++n) {
++        for (int m = 0; m < 8; ++m) {
++            const uint8_t q = (uint8_t) (qs[16 + m] * pow3[n]);
++            const int xi = ((int) q * 3) >> 8;
++            v[80 + n * 8 + m] = (int8_t) (xi - 1);
++        }
++    }
++}
++
++inline void decode_qh(const uint8_t* qh, int8_t* v) {
++    static const uint8_t pow3[4] = {1, 3, 9, 27};
++    for (int n = 0; n < 4; ++n) {
++        for (int h = 0; h < 2; ++h) {
++            const uint8_t q = (uint8_t) (qh[h] * pow3[n]);
++            const int xi = ((int) q * 3) >> 8;
++            v[120 + n * 2 + h] = (int8_t) (xi - 1);
++        }
++    }
++}
++
++// One weight block (128 trits) against the 128-value half of a Q8_K block.
++inline int32_t dot128(const int8_t* v, const int8_t* aq) {
++    int32_t acc = 0;
++    for (int k = 0; k < kQK; ++k) acc += (int32_t) v[k] * (int32_t) aq[k];
++    return acc;
++}
++
++template <int NT>
++void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
++    float accf[NT];
++    for (int t = 0; t < NT; ++t) accf[t] = 0.f;
++    for (int i = 0; i < nblocks; ++i) {
++        const uint8_t* b = row + (size_t) i * kBB;
++        int8_t v[kQK];
++        ptq1_0_decode128(b, v);
++        const float dw = fp16_to_fp32(read_u16(b + 26));
++        for (int t = 0; t < NT; ++t) {
++            const block_q8_K& a = y[t][i / 2];
++            const int8_t* aq = a.qs + (size_t) (i % 2) * kQK;
++            accf[t] += dw * a.d * (float) dot128(v, aq);
++        }
++    }
++    for (int t = 0; t < NT; ++t) res[t] = accf[t];
++}
++
++template <int NT>
++void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
++             float* const* ff, int r0, int r1) {
++    const block_q8_K* y[NT];
++    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
++    const int nb = n / kQK;
++    float g[NT], u[NT];
++    for (int r = r0; r < r1; ++r) {
++        row_dot<NT>(blob + (size_t) r * gu_row, nb, y, g);
++        row_dot<NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
++        for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
++    }
++}
++
++template <int NT>
++void down_rows(const uint8_t* blob, size_t d_row, int n, const void* const* hq, float* const* out,
++               int r0, int r1) {
++    const block_q8_K* y[NT];
++    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) hq[t];
++    const int nb = n / kQK;
++    float res[NT];
++    for (int r = r0; r < r1; ++r) {
++        row_dot<NT>(blob + (size_t) r * d_row, nb, y, res);
++        for (int t = 0; t < NT; ++t) out[t][r] = res[t];
++    }
++}
++
++template <int NT>
++void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
++                float* const* ff, int r0, int r1) {
++    switch (nt) {
++        case 1: gu_rows<1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 2: gu_rows<2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 3: gu_rows<3>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 4: gu_rows<4>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 5: gu_rows<5>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 6: gu_rows<6>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        case 7: gu_rows<7>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++        default: gu_rows<8>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
++    }
++}
++
++template <int NT>
++void down_rows_nt(int nt, const uint8_t* blob, size_t d_row, int n, const void* const* hq, float* const* out,
++                  int r0, int r1) {
++    switch (nt) {
++        case 1: down_rows<1>(blob, d_row, n, hq, out, r0, r1); break;
++        case 2: down_rows<2>(blob, d_row, n, hq, out, r0, r1); break;
++        case 3: down_rows<3>(blob, d_row, n, hq, out, r0, r1); break;
++        case 4: down_rows<4>(blob, d_row, n, hq, out, r0, r1); break;
++        case 5: down_rows<5>(blob, d_row, n, hq, out, r0, r1); break;
++        case 6: down_rows<6>(blob, d_row, n, hq, out, r0, r1); break;
++        case 7: down_rows<7>(blob, d_row, n, hq, out, r0, r1); break;
++        default: down_rows<8>(blob, d_row, n, hq, out, r0, r1); break;
++    }
++}
++
++}  // namespace
++
++void ptq1_0_decode128(const uint8_t* block, int8_t* out128) {
++    decode_stage16(block, out128);
++    decode_stage8(block, out128);
++    decode_qh(block + 24, out128);
++}
++
++void ptq1_0_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
++                    int nt, float* const* ff, int r0, int r1) {
++    gu_rows_nt<1>(nt, blob, gu_row, up_off, n, act, ff, r0, r1);
++}
++
++void ptq1_0_down_rows(const uint8_t* blob, size_t d_row, int n, const void* const* hq,
++                      int nt, float* const* out, int r0, int r1) {
++    down_rows_nt<1>(nt, blob, d_row, n, hq, out, r0, r1);
++}
++
++}  // namespace strata::kernels::cpu
+diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
+index ee55718b..ab8f9117 100644
+--- a/src/kernels/cuda/iq_kernels.cu
++++ b/src/kernels/cuda/iq_kernels.cu
+@@ -107,6 +107,100 @@ __device__ __forceinline__ float vec_dot_q2_0_q8_1(const void* __restrict__ vbq,
+     return d2 * d8 * sumi;
+ }
+ 
++// PTQ1_0 (Scion type 143, the fork's vec_dot_ptq1_0_q8_1_multi in ggml-cuda/vecdotq.cuh, MIT): 128 ternary
++// values per block with one fp16 scale; one call consumes the whole block, i.e. the four q8_1 blocks at
++// bq8_1[iqs..iqs+4) of the pass base.  The packed bytes are multiplied by 3 stage by stage with the per-lane
++// truncation mod 256 (the & 0x00FF00FF after each multiply), then the high byte of each 16-bit lane minus one
++// is one trit in {-1, 0, 1} -- exactly the reference's `(uint8_t)(byte * 3^n) * 3 >> 8 - 1`.  Written over the
++// shared __byte_perm/__vsub4/__dp4a shims (dp4a.hpp, hip_compat), so one source serves CUDA and HIP.
++template <int ncols_dst>
++__device__ __forceinline__ void vec_dot_ptq1_0_q8_1_multi(const void* __restrict__ vbq,
++                                                          const block_q8_1* __restrict__ bq8_1, const int& kbx,
++                                                          const int& iqs, const uint32_t stride_col_y,
++                                                          float* result) {
++    const block_ptq1_0* bq = (const block_ptq1_0*) vbq + kbx;
++    int sumi[ncols_dst][4] = {};
++
++    // Widen four bytes to 16-bit lanes so multiply-by-three cannot carry between bytes.
++#pragma unroll
++    for (int g = 0; g < 4; ++g) {
++        const uint32_t packed = get_int_b4(bq->qs, g);
++        uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
++        uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
++
++#pragma unroll
++        for (int t = 0; t < 5; ++t) {
++            const uint32_t w_lo = v_lo * 3;
++            const uint32_t w_hi = v_hi * 3;
++            v_lo = w_lo & 0x00FF00FF;
++            v_hi = w_hi & 0x00FF00FF;
++
++            const int q = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
++            const int e = t * 16 + 4 * g;
++#pragma unroll
++            for (int j = 0; j < ncols_dst; ++j) {
++                const int u = get_int_b4(bq8_1[j * stride_col_y + iqs + (e >> 5)].qs, (e & 31) >> 2);
++                sumi[j][e >> 5] = ggml_cuda_dp4a(q, u, sumi[j][e >> 5]);
++            }
++        }
++    }
++
++#pragma unroll
++    for (int g = 0; g < 2; ++g) {
++        const uint32_t packed = get_int_b4(bq->qs + 16, g);
++        uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
++        uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
++
++#pragma unroll
++        for (int t = 0; t < 5; ++t) {
++            const uint32_t w_lo = v_lo * 3;
++            const uint32_t w_hi = v_hi * 3;
++            v_lo = w_lo & 0x00FF00FF;
++            v_hi = w_hi & 0x00FF00FF;
++
++            const int q = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
++            const int e = 80 + t * 8 + 4 * g;
++#pragma unroll
++            for (int j = 0; j < ncols_dst; ++j) {
++                const int u = get_int_b4(bq8_1[j * stride_col_y + iqs + (e >> 5)].qs, (e & 31) >> 2);
++                sumi[j][e >> 5] = ggml_cuda_dp4a(q, u, sumi[j][e >> 5]);
++            }
++        }
++    }
++
++    uint32_t v = (uint32_t) bq->qh[0] | ((uint32_t) bq->qh[1] << 16);
++#pragma unroll
++    for (int t = 0; t < 4; t += 2) {
++        const uint32_t w0 = v * 3;
++        v = w0 & 0x00FF00FF;
++        const uint32_t w1 = v * 3;
++        v = w1 & 0x00FF00FF;
++
++        const int q = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
++#pragma unroll
++        for (int j = 0; j < ncols_dst; ++j) {
++            const int u = get_int_b4(bq8_1[j * stride_col_y + iqs + 3].qs, 6 + t / 2);
++            sumi[j][3] = ggml_cuda_dp4a(q, u, sumi[j][3]);
++        }
++    }
++
++    const float d = __half2float(bq->d);
++#pragma unroll
++    for (int j = 0; j < ncols_dst; ++j) {
++        float acc = 0.0f;
++#pragma unroll
++        for (int k = 0; k < 4; ++k) acc += __low2float(bq8_1[j * stride_col_y + iqs + k].ds) * (float) sumi[j][k];
++        result[j] = d * acc;
++    }
++}
++
++__device__ __forceinline__ float vec_dot_ptq1_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
++                                                     const int& kbx, const int& iqs) {
++    float result;
++    vec_dot_ptq1_0_q8_1_multi<1>(vbq, bq8_1, kbx, iqs, 0, &result);
++    return result;
++}
++
+ __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                       const int& kbx, const int& iqs) {
+     const block_iq2_xxs* bq2 = (const block_iq2_xxs*) vbq + kbx;
+@@ -809,6 +903,9 @@ template<> struct Fmt<29> { static constexpr int qk = 256, ipb = 8, step = 1;
+     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_iq1_m_q8_1(v, y, kbx, iqs); } };
+ template<> struct Fmt<42> { static constexpr int qk = 64, ipb = 2, step = 1;
+     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_0_q8_1(v, y, kbx, iqs); } };
++// PTQ1_0: one call per 128-value block (the dot consumes all four q8_1 blocks of the pass base)
++template<> struct Fmt<143> { static constexpr int qk = 128, ipb = 1, step = 1;
++    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_ptq1_0_q8_1(v, y, kbx, iqs); } };
+ template<> struct Fmt<12> { static constexpr int qk = 256, ipb = QI4_K / VDR_Q4_K, step = VDR_Q4_K;
+     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q4_K_q8_1(v, y, kbx, iqs); } };
+ template<> struct Fmt<13> { static constexpr int qk = 256, ipb = QI5_K / VDR_Q5_K, step = VDR_Q5_K;
+@@ -843,17 +940,17 @@ STRATA_TQP_FMT(149)
+ // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
+ // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
+ #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
+-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
++#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(143) X(144) X(145) X(147) X(148) X(149)
+ #else
+-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
++#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(143) X(144) X(145) X(147) X(148) X(149)
+ #endif
+ // Q5_K / Q6_K downs: Qwen3.6-35B-A3B (FF 512, whole 256-blocks per row); Flash-Next's FF 640 never selects them
+ #ifdef STRATA_Q6K_EXPERTS
+-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(14) X(40) X(144) X(146) X(147) X(148) X(149)
++#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(14) X(40) X(143) X(144) X(146) X(147) X(148) X(149)
+ #else
+-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(40) X(144) X(146) X(147) X(148) X(149)
++#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(40) X(143) X(144) X(146) X(147) X(148) X(149)
+ #endif
+-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(146) X(147) X(148) X(149)
++#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(143) X(144) X(145) X(146) X(147) X(148) X(149)
+ template<> struct Fmt<40> { static constexpr int qk = 64, ipb = 2, step = 4;     // NVFP4: 2 calls of 32 values
+     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_nvfp4_q8_1(v, y, kbx, iqs); } };
+ 
+@@ -903,6 +1000,10 @@ template<int TY> struct Split;
+ // per-entry ones, which call Fmt<TY>::dot per column exactly as before #242 (the launchers test kSplit at compile
+ // time, so the multi kernels are never instantiated for a type without a Split).
+ template<int TY> inline constexpr bool kSplit = false;
++// The sub-16-lane kernels walk the activation as 80/20 q8_1 blocks (the IQ formats' 256-value blocks).
++// PTQ1_0's split consumes four q8_1 blocks per call (qk 128, ipb 1), so that mapping does not apply and
++// it stays on the 32-lane multi kernels (whose k < nb * ipb loop is the same order, bitwise equal).
++template<int TY> inline constexpr bool kSub16 = (TY != 143);
+ // The K-quant / Q8_0 / Q5_1 formats (UD-Q4_K_XL) have Split traits (SplitK below), but their decode-once multi kernels
+ // run only with STRATA_KQ_SPLIT=1 until the A/B on the measured cards decides (bitwise the old kernels either way).
+ template<int TY> inline constexpr bool kq_type = (TY == 12 || TY == 13 || TY == 8);   // not Q5_1: its Split apply is not bitwise the old dot (FMA contraction), see notes-151-amd
+@@ -1497,6 +1598,71 @@ template<> struct Split<147> : SplitTqp<147> {};
+ template<> struct Split<148> : SplitTqp<148> {};
+ template<> struct Split<149> : SplitTqp<149> {};
+ 
++// PTQ1_0: the load decodes the whole 128-value block into 32 words of four trits each (element order), the
++// apply runs the same dp4a chains against the same activation bytes and the same float scale order as
++// vec_dot_ptq1_0_q8_1_multi<1>: the integer sums are exact, so a column is bitwise equal to the per-entry kernel.
++template<> inline constexpr bool kSplit<143> = true;
++template<> struct Split<143> {   // PTQ1_0
++    struct W { int q[32]; float dw; };
++    template<bool STAGE_GRID = false>
++    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
++        (void) iqs;   // the whole block decodes in one load
++        const block_ptq1_0* bq = (const block_ptq1_0*) vbq + kbx;
++        W r;
++#pragma unroll
++        for (int g = 0; g < 4; ++g) {
++            const uint32_t packed = get_int_b4(bq->qs, g);
++            uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
++            uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
++#pragma unroll
++            for (int t = 0; t < 5; ++t) {
++                const uint32_t w_lo = v_lo * 3;
++                const uint32_t w_hi = v_hi * 3;
++                v_lo = w_lo & 0x00FF00FF;
++                v_hi = w_hi & 0x00FF00FF;
++                r.q[t * 4 + g] = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
++            }
++        }
++#pragma unroll
++        for (int g = 0; g < 2; ++g) {
++            const uint32_t packed = get_int_b4(bq->qs + 16, g);
++            uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
++            uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
++#pragma unroll
++            for (int t = 0; t < 5; ++t) {
++                const uint32_t w_lo = v_lo * 3;
++                const uint32_t w_hi = v_hi * 3;
++                v_lo = w_lo & 0x00FF00FF;
++                v_hi = w_hi & 0x00FF00FF;
++                r.q[20 + t * 2 + g] = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
++            }
++        }
++        uint32_t v = (uint32_t) bq->qh[0] | ((uint32_t) bq->qh[1] << 16);
++#pragma unroll
++        for (int t = 0; t < 4; t += 2) {
++            const uint32_t w0 = v * 3;
++            v = w0 & 0x00FF00FF;
++            const uint32_t w1 = v * 3;
++            v = w1 & 0x00FF00FF;
++            r.q[30 + t / 2] = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
++        }
++        r.dw = __half2float(bq->d);
++        return r;
++    }
++    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
++        int sumi[4] = {0, 0, 0, 0};
++#pragma unroll
++        for (int k = 0; k < 4; ++k)
++#pragma unroll
++            for (int j = 0; j < 8; ++j)
++                sumi[k] = ggml_cuda_dp4a(r.q[8 * k + j], get_int_b4(bq8_1[iqs + k].qs, j), sumi[k]);
++        float acc = 0.0f;
++#pragma unroll
++        for (int k = 0; k < 4; ++k) acc += __low2float(bq8_1[iqs + k].ds) * (float) sumi[k];
++        return r.dw * acc;
++    }
++};
++
+ // One row against the n <= NC activations x + off[0..n) (n >= 1, warp-uniform; offsets in q8_1 blocks, 32-bit to
+ // spare registers), the whole warp.  Per activation this is row_dot: the same calls k, lane-strided the same way,
+ // summed in the same order, then the same warp_sum.  Only the weight side moves out of the per-activation loop.
+@@ -3100,6 +3266,28 @@ __device__ void dq_q2_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+         yy[b * 64 + i] = cvt<dst_t>(d * (float) (code - 1));
+     }
+ }
++template<typename dst_t>
++__device__ void dq_ptq1_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
++    // one "superblock" = 256 values = 2 blocks of 128; thread tid writes 8 values of one block.
++    // The base-3 layout of element e: qs[e % 16] * 3^(e / 16) for e < 80, qs[16 + (e-80) % 8] * 3^((e-80)/8)
++    // for 80 <= e < 120, qh[(e-120) % 2] * 3^((e-120)/2) beyond; the uint8 truncation and the *3 >> 8 are the
++    // fork's dequantize_row_ptq1_0, value for value (the same decode the CPU kernel uses).
++    const block_ptq1_0* x = (const block_ptq1_0*) vx + ibs * 2;
++    const int b = tid / 16, part = tid % 16;
++    dst_t* y = yy + b * 128 + part * 8;
++    const float d = __half2float(x[b].d);
++    const uint8_t* qs = x[b].qs;
++    const uint8_t* qh = x[b].qh;
++    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
++#pragma unroll
++    for (int j = 0; j < 8; ++j) {
++        const int e = part * 8 + j;
++        const int n = e < 80 ? e / 16 : (e < 120 ? (e - 80) / 8 : (e - 120) / 2);
++        const uint8_t byte = e < 80 ? qs[e % 16] : (e < 120 ? qs[16 + (e - 80) % 8] : qh[(e - 120) % 2]);
++        const uint8_t v = (uint8_t) (byte * pow3[n]);
++        y[j] = cvt<dst_t>(d * (float) (((int) v * 3 >> 8) - 1));
++    }
++}
+ 
+ // llama.cpp's dequantize_q4_K / dequantize_q5_K (dequantize.cuh; q5_K's 64 threads folded onto 32) and the 32-value
+ // blocks of Q5_1 / Q8_0, 8 of them per 256-value "superblock" (thread tid writes 8 values of block tid % 8).
+@@ -3321,6 +3509,7 @@ __device__ __forceinline__ void dq_dispatch(int ty, const void* vx, int64_t ibs,
+         case 23: dq_iq4_xs(vx, ibs, y, tid); break;
+         case 11: dq_q3_k(vx, ibs, y, tid); break;
+         case 42: dq_q2_0(vx, ibs, y, tid); break;
++        case 143: dq_ptq1_0(vx, ibs, y, tid); break;
+         case 12: dq_q4_k(vx, ibs, y, tid); break;
+         case 13: dq_q5_k(vx, ibs, y, tid); break;
+         case 14: dq_q6_k(vx, ibs, y, tid); break;   // the Q6K_EXPERTS kernels, and the token embedding (Gyro-S)
+@@ -3378,9 +3567,9 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
+ bool is_iq(int t) {
+     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
+ #ifdef STRATA_Q6K_EXPERTS
+-           t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
++           t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 143 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
+ #else
+-           t == 12 || t == 13 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
++           t == 12 || t == 13 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 143 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
+ #endif
+ }
+ // values per block of the types the grouped expert kernels take (0 = none)
+@@ -3408,6 +3597,16 @@ bool gu_split(int t) {
+         default: return false;
+     }
+ }
++// The types whose split may take the sub-16-lane kernels (see kSub16); the grouped launch's row count
++// follows this, not gu_split, so a type that must stay on the 32-lane kernel gets GU_ROWS.
++bool gu_sub16(int t) {
++    switch (t) {
++#define STRATA_S16(T) case T: return kSub16<T>;
++        STRATA_GU_FMTS(STRATA_S16)
++#undef STRATA_S16
++        default: return false;
++    }
++}
+ 
+ bool env_on(const char* name) {
+     const char* v = std::getenv(name);
+@@ -4230,16 +4429,16 @@ void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, con
+         }
+         if (!g_stage_grid || ((TG == 18 || TG == 21) && !stage_tables_on()) || (kTqType<TG> && !tq_stage_on())) {
+             if (g_no_sub16_gu) native_gu_multi_kernel<TG, false, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+-            else native_gu_multi_kernel<TG, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
++            else native_gu_multi_kernel<TG, false, kSub16<TG>><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+             return;
+         }
+         dim3 sg = grid;
+         if constexpr (kTqType<TG>) sg.x = (grid.x + tq_row_chunks() - 1) / tq_row_chunks();   // the staged codebook is paid once per chunks
+         if (g_no_sub16_gu) native_gu_multi_kernel<TG, true, false><<<sg, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+-        else native_gu_multi_kernel<TG, true, true><<<sg, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
++        else native_gu_multi_kernel<TG, true, kSub16<TG>><<<sg, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+     } else {
+         if (g_no_sub16_gu) native_gu_multi_kernel<TG, false, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+-        else native_gu_multi_kernel<TG, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
++        else native_gu_multi_kernel<TG, false, kSub16<TG>><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+     }
+ }
+ 
+@@ -4305,7 +4504,7 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
+         else native_down_multi_kernel<TD, true, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+     }
+     else if (g_no_sub16_gu) native_down_multi_kernel<TD, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+-    else native_down_multi_kernel<TD, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
++    else native_down_multi_kernel<TD, kSub16<TD>><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+ }
+ // ---------------------------------------------------------------- STRATA_DOWN_WS: the decode down projection, staged
+ // (opt-in, default off; cc 6.0 only).  native_down_multi_kernel's IQ4_NL (K 40, n_ff 640) and Q2_0 (K 20) rows read each
+@@ -5335,6 +5534,7 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
+         case 23: return (size_t) (n / 256) * sizeof(block_iq4_xs);
+         case 11: return (size_t) (n / 256) * sizeof(block_q3_K);
+         case 42: return (size_t) (n / 64) * sizeof(block_q2_0);
++        case 143: return (size_t) (n / 128) * sizeof(block_ptq1_0);
+         case 12: return (size_t) (n / 256) * sizeof(block_q4_K);
+         case 13: return (size_t) (n / 256) * sizeof(block_q5_K);
+         case 14: return (size_t) (n / 256) * sizeof(block_q6_K);
+@@ -6345,7 +6545,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
+     }
+     const bool v1 = g_grouped_v1;
+     const int64_t gy = (v1 || grid_groups <= 0 || grid_groups > cap_groups) ? cap_groups : grid_groups;
+-    const int gu_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_embd == 2560 && gu_split(L.gu_type) &&
++    const int gu_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_embd == 2560 && gu_sub16(L.gu_type) &&
+                          gu_qk(L.gu_type) != 128 && L.gu_type != 12 && L.gu_type != 13) ? 16 : GU_ROWS;   // qk 128 (APR trellis): no sub-16 rows, see launch_gu
+     const dim3 ggu((unsigned) ((2 * L.n_ff + gu_rows - 1) / gu_rows), (unsigned) gy);
+ #if STRATA_EXP_LAYOUTS
+diff --git a/src/kernels/cuda/lora_corr.cu b/src/kernels/cuda/lora_corr.cu
+new file mode 100644
+index 00000000..2ddcf027
+--- /dev/null
++++ b/src/kernels/cuda/lora_corr.cu
+@@ -0,0 +1,155 @@
++// src/kernels/cuda/lora_corr.cu - the correction branch: round x to f16, t16 = f16(A x), out += B t16.
++//
++// The three passes, in order, are the reference `lora_corr_parity` mirrors and the one decode, prefill and
++// verify all share:
++//
++//   round  x -> x16 with the repo's RNE `f16_from_f32` (the A pass's operand rule; done once per x element,
++//          which is why it is a separate pass and not a per-multiply conversion in the hot loop).
++//   A      one BLOCK - four warps - per (row, output) pair; the reduction axis splits into four contiguous
++//          quarters of `n_in / 8` uint4 groups, each warp's lane l takes groups q0+l, q0+l+32, ... with the
++//          four accumulator chains of a 4x-unrolled loop (and acc0 for the tail), the partials combine as
++//          ((acc0+acc1)+(acc2+acc3)), then the 16/8/4/2/1 lane tree, then the four quarters LEFT TO RIGHT.
++//          `dot8` converts the f16 pairs with one hardware conversion each (`__half22float2`, exact for the
++//          f16 -> f32 direction) and accumulates in f32 in element order; the rounded f16 result is the
++//          kernel's only output.  **The previous form converted every element with the bit-exact scalar
++//          converter and was ALU-bound, not memory-bound: measured 69.6 -> 15.6 us on the ssm shape at
++//          rows=3, warm.**  The f32 -> f16 rounding that must stay bit-exact is in `f16_from_f32`.
++//   B      one WARP per (row, output) pair, lanes striding the reduction axis in uint4 groups of 8 f16,
++//          both operands f16 (`t16` from the A pass, B's own rows from the file).  The scalar f32-t form
++//          measured 28-43 us per branch at rows 3-5; this form 7-10 us.
++//
++// A is [rank, n_in] and B is [n_out, rank], both raw f16 rows.  n_in and rank must be multiples of 8 (uint4
++// rows); the validator refuses other geometries rather than mis-reading.
++#include "strata/kernels/lora_corr.hpp"
++
++#include "strata/kernels/f16_bits.hpp"
++
++#include <cuda_fp16.h>
++#include <cuda_runtime.h>
++
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++
++namespace strata::kernels {
++namespace {
++
++void check(const char* what) {
++    const cudaError_t e = cudaGetLastError();
++    if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
++}
++
++constexpr int THREADS = 256;
++constexpr int WARPS = THREADS / 32;
++
++// Phase 1: one block per output, four warps splitting the reduction axis.  The order is fixed by
++// `lora_corr_parity`'s reference.
++constexpr int A_WARPS = 4;
++
++/// The A pass's 8-element product: the f16 pairs convert with one hardware instruction per pair and the
++/// eight products accumulate left to right in element order (f32).  The host reference writes the same
++/// eight `+=` statements against `f32_from_f16` values; keep the shapes in step.
++__device__ __forceinline__ float dot8(const uint4 av, const uint4 xv) {
++    const float2 a0 = __half22float2(*reinterpret_cast<const __half2*>(&av.x));
++    const float2 a1 = __half22float2(*reinterpret_cast<const __half2*>(&av.y));
++    const float2 a2 = __half22float2(*reinterpret_cast<const __half2*>(&av.z));
++    const float2 a3 = __half22float2(*reinterpret_cast<const __half2*>(&av.w));
++    const float2 x0 = __half22float2(*reinterpret_cast<const __half2*>(&xv.x));
++    const float2 x1 = __half22float2(*reinterpret_cast<const __half2*>(&xv.y));
++    const float2 x2 = __half22float2(*reinterpret_cast<const __half2*>(&xv.z));
++    const float2 x3 = __half22float2(*reinterpret_cast<const __half2*>(&xv.w));
++    float s = a0.x * x0.x;
++    s += a0.y * x0.y;
++    s += a1.x * x1.x;
++    s += a1.y * x1.y;
++    s += a2.x * x2.x;
++    s += a2.y * x2.y;
++    s += a3.x * x3.x;
++    s += a3.y * x3.y;
++    return s;
++}
++
++__global__ void lora_round_kernel(const float* __restrict__ x, uint16_t* __restrict__ x16, int64_t n) {
++    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
++    if (i < n) x16[i] = f16_from_f32(x[i]);
++}
++
++__global__ void lora_a_kernel(const uint16_t* __restrict__ a, const uint16_t* __restrict__ x16,
++                              uint16_t* __restrict__ t16, int64_t n_rows, int64_t n_in, int64_t rank) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = blockIdx.x;                      // the output index (tok, r)
++    if (i >= n_rows * rank) return;
++    const int64_t tok = i / rank, r = i % rank;
++    const int64_t n8 = n_in / 8;                       // uint4 groups in the reduction axis
++    const uint16_t* row = a + (size_t) r * n_in;
++    const uint16_t* xr = x16 + (size_t) tok * n_in;
++    const uint4* rp = reinterpret_cast<const uint4*>(row);
++    const uint4* xp = reinterpret_cast<const uint4*>(xr);
++    const int64_t q0 = (n8 * warp) / A_WARPS;
++    const int64_t q1 = (n8 * (warp + 1)) / A_WARPS;
++    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
++    int64_t k = q0 + lane;
++    for (; k + 96 < q1; k += 128) {
++        acc0 += dot8(rp[k], xp[k]);
++        acc1 += dot8(rp[k + 32], xp[k + 32]);
++        acc2 += dot8(rp[k + 64], xp[k + 64]);
++        acc3 += dot8(rp[k + 96], xp[k + 96]);
++    }
++    for (; k < q1; k += 32) acc0 += dot8(rp[k], xp[k]);
++    float acc = (acc0 + acc1) + (acc2 + acc3);
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    __shared__ float part[A_WARPS];
++    if (lane == 0) part[warp] = acc;
++    __syncthreads();
++    if (threadIdx.x == 0) t16[(size_t) i] = f16_from_f32(((part[0] + part[1]) + part[2]) + part[3]);
++}
++
++// Phase 2: one WARP per (row, output) pair, lanes striding the reduction axis in uint4 groups.  Both
++// operands are already f16 (B's rows are the file's f16, `t16` is the A pass's rounded output), so the
++// pairs convert with one hardware instruction each and the loop is memory-shaped.  Measured against the
++// previous scalar form on this box: 28-43 us -> 7-10 us at rows 3-5.
++__global__ void lora_b_kernel(const uint16_t* __restrict__ b, const uint16_t* __restrict__ t16,
++                              float* __restrict__ out, int64_t n_rows, int64_t rank, int64_t n_out) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = (int64_t) blockIdx.x * WARPS + warp;
++    if (i >= n_rows * n_out) return;
++    const int64_t tok = i / n_out, o = i % n_out;
++    const int64_t n8 = rank / 8;
++    const uint4* rp = reinterpret_cast<const uint4*>(b + (size_t) o * rank);
++    const uint4* tp = reinterpret_cast<const uint4*>(t16 + (size_t) tok * rank);
++    float acc = 0.0f;
++    for (int64_t k = lane; k < n8; k += 32) acc += dot8(rp[k], tp[k]);
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    if (lane == 0) out[(size_t) tok * n_out + o] += acc;
++}
++
++}  // namespace
++
++void lora_corr_round_x(const float* x, uint16_t* x16, int64_t n, void* stream) {
++    if (x == nullptr || x16 == nullptr || n <= 0) return;
++    cudaStream_t s = (cudaStream_t) stream;
++    lora_round_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, s>>>(x, x16, n);
++    check("lora_corr_round_x");
++}
++
++void lora_corr_apply(const uint16_t* a, const uint16_t* b, const float* x, uint16_t* x16, uint16_t* t16, float* out,
++                     int64_t n_rows, int64_t n_in, int64_t rank, int64_t n_out, void* stream) {
++    if (a == nullptr || b == nullptr || n_rows <= 0) return;
++    cudaStream_t s = (cudaStream_t) stream;
++    // Chunked so a caller's x16 scratch is bounded by kLoraCorrRoundRows rows; stream order makes the
++    // reuse of the scratch between chunks safe.
++    for (int64_t r0 = 0; r0 < n_rows; r0 += kLoraCorrRoundRows) {
++        const int64_t rc = std::min(kLoraCorrRoundRows, n_rows - r0);
++        lora_corr_round_x(x + (size_t) r0 * n_in, x16, rc * n_in, stream);
++        const int64_t pa = rc * rank;
++        lora_a_kernel<<<(unsigned) pa, 32 * A_WARPS, 0, s>>>(a, x16, t16 + (size_t) r0 * rank, rc, n_in, rank);
++        check("lora_corr_apply/a");
++    }
++    const int64_t pb = n_rows * n_out;
++    lora_b_kernel<<<(unsigned) ((pb + WARPS - 1) / WARPS), THREADS, 0, s>>>(b, t16, out, n_rows, rank, n_out);
++    check("lora_corr_apply/b");
++}
++
++}  // namespace strata::kernels
+diff --git a/src/kernels/f16_hw_check.cu b/src/kernels/f16_hw_check.cu
+new file mode 100644
+index 00000000..aeca099c
+--- /dev/null
++++ b/src/kernels/f16_hw_check.cu
+@@ -0,0 +1,193 @@
++// src/kernels/f16_hw_check.cu - do the hardware f16 conversions match the repo's bit-exact software ones?
++//
++// `f16_bits.hpp` documents that a hardware conversion returned wrong bits once (round 193) and the cause
++// was never isolated, so the repo uses software converters everywhere.  The correction kernels spend
++// ~75-80% of their time in them, so this check asks the question again, precisely: `__float2half_rn`
++// (ROUND-TO-NEAREST, which `__float2half` is NOT - it truncates) and `__half2float` against
++// `f16_from_f32`/`f32_from_f16`, bit for bit:
++//
++//   * widening: every one of the 65,536 fp16 codes, compared as f32 bits (inf/NaN included);
++//   * narrowing: a deterministic sweep of ~16M f32 bit patterns over the magnitude range 2^-44..2^44
++//     (which covers fp16 subnormals, normals and overflow), plus the boundary values and the specials.
++//
++// A mismatch prints the input, the two outputs, and exits nonzero.
++#include "strata/kernels/f16_bits.hpp"
++
++#include <cuda_runtime.h>
++#include <cuda_fp16.h>
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <cstdlib>
++
++namespace {
++
++__device__ __forceinline__ uint32_t f32_bits(float f) {
++    uint32_t u;
++    __builtin_memcpy(&u, &f, 4);
++    return u;
++}
++
++__device__ __forceinline__ uint16_t f16_bits_of(__half h) {
++    uint16_t b;
++    __builtin_memcpy(&b, &h, 2);
++    return b;
++}
++
++__global__ void widen_kernel(unsigned long long* mism, unsigned long long* nanpay, uint32_t* first_bad, uint32_t* first_hw) {
++    const uint32_t h = blockIdx.x * blockDim.x + threadIdx.x;
++    if (h >= 65536u) return;
++    const uint16_t bits = (uint16_t) h;
++    const float sw = strata::kernels::f32_from_f16(bits);
++    __half hh;
++    memcpy(&hh, &bits, 2);
++    const float hw = __half2float(hh);
++    const uint32_t s = f32_bits(sw), w = f32_bits(hw);
++    if (s == w) return;
++    if (isnan(sw) && isnan(hw)) {   // both NaN: the payload differs, the value does not
++        atomicAdd(nanpay, 1ull);
++        return;
++    }
++    atomicAdd(mism, 1ull);
++    if (atomicCAS(first_bad, 0xFFFFFFFFu, h) == 0xFFFFFFFFu) *first_hw = w;
++}
++
++__device__ __forceinline__ float sweep_value(uint64_t i) {
++    // A deterministic spread: sign, mantissa, and an exponent over [-44, 44] - fp16 subnormals,
++    // normals, and the overflow boundary are all inside.
++    uint32_t u = (uint32_t) (i * 2654435761ull + 0x9E3779B9ull);
++    const int e = (int) ((u >> 20) % 89u) - 44;
++    const float m = 1.0f + (float) (u & 0x7FFFFFu) / 8388608.0f;
++    const float f = ldexpf(m, e);
++    return (u & 0x80000000u) ? -f : f;
++}
++
++__global__ void narrow_kernel(unsigned long long* mism, uint32_t* first_bad, uint16_t* first_hw, uint64_t n) {
++    const uint64_t i = (uint64_t) blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= n) return;
++    const float f = sweep_value(i);
++    const uint16_t sw = strata::kernels::f16_from_f32(f);
++    const uint16_t hw = f16_bits_of(__float2half_rn(f));
++    if (sw != hw) {
++        atomicAdd(mism, 1ull);
++        if (atomicCAS(first_bad, 0xFFFFFFFFu, f32_bits(f)) == 0xFFFFFFFFu) *first_hw = hw;
++    }
++}
++
++__device__ __forceinline__ uint16_t hw_narrow(float f) { return f16_bits_of(__float2half_rn(f)); }
++
++// The boundary and special values, one thread each.
++__global__ void targeted_kernel(const float* in, int n, unsigned long long* mism, unsigned long long* nanpay, int* which, uint16_t* first_hw) {
++    const int i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= n) return;
++    const float f = in[i];
++    const uint16_t sw = strata::kernels::f16_from_f32(f);
++    const uint16_t hw = hw_narrow(f);
++    if (sw == hw) return;
++    if (isnan(f)) {   // NaN -> fp16 NaN: the payload differs, the value does not
++        atomicAdd(nanpay, 1ull);
++        return;
++    }
++    atomicAdd(mism, 1ull);
++    if (atomicCAS(which, -1, i) == -1) *first_hw = hw;
++}
++
++void check(const char* what) {
++    const cudaError_t e = cudaGetLastError();
++    if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
++}
++
++uint32_t hbits(float f) {
++    uint32_t u;
++    memcpy(&u, &f, 4);
++    return u;
++}
++
++float from_bits(uint32_t u) {
++    float f;
++    memcpy(&f, &u, 4);
++    return f;
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    const uint64_t n = argc > 1 ? strtoull(argv[1], nullptr, 0) : (1ull << 24);
++    unsigned long long* dm = nullptr;
++    unsigned long long* dnp = nullptr;
++    uint32_t* dbad = nullptr;
++    uint32_t* dbadhw = nullptr;
++    uint16_t* dbadhw16 = nullptr;
++    int* dwhich = nullptr;
++    cudaMalloc(&dm, 8);
++    cudaMalloc(&dnp, 8);
++    cudaMalloc(&dbad, 4);
++    cudaMalloc(&dbadhw, 4);
++    cudaMalloc(&dbadhw16, 2);
++    cudaMemset(dm, 0, 8);
++    cudaMemset(dnp, 0, 8);
++    cudaMemset(dbad, 0xFF, 4);
++    check("alloc");
++
++    widen_kernel<<<256, 256>>>(dm, dnp, dbad, dbadhw);
++    cudaDeviceSynchronize();
++    check("widen");
++    unsigned long long m = 0;
++    uint32_t bad = 0, badhw = 0;
++    cudaMemcpy(&m, dm, 8, cudaMemcpyDeviceToHost);
++    cudaMemcpy(&bad, dbad, 4, cudaMemcpyDeviceToHost);
++    cudaMemcpy(&badhw, dbadhw, 4, cudaMemcpyDeviceToHost);
++    if (m) {
++        std::printf("widen: %llu of 65536 differ, first 0x%04X: sw %08X hw %08X\n", m, (uint16_t) bad,
++                    hbits(strata::kernels::f32_from_f16((uint16_t) bad)), badhw);
++        return 1;
++    }
++    unsigned long long np = 0;
++    cudaMemcpy(&np, dnp, 8, cudaMemcpyDeviceToHost);
++    std::printf("widen:  65536 of 65536 fp16 codes -> f32 agree (%llu NaN-payload-only differences)\n", np);
++
++    cudaMemset(dm, 0, 8);
++    cudaMemset(dbad, 0xFF, 4);
++    narrow_kernel<<<(unsigned) ((n + 255) / 256), 256>>>(dm, dbad, dbadhw16, n);
++    cudaDeviceSynchronize();
++    check("narrow");
++    cudaMemcpy(&m, dm, 8, cudaMemcpyDeviceToHost);
++    cudaMemcpy(&bad, dbad, 4, cudaMemcpyDeviceToHost);
++    uint16_t bad16 = 0;
++    cudaMemcpy(&bad16, dbadhw16, 2, cudaMemcpyDeviceToHost);
++    if (m) {
++        std::printf("narrow: %llu of %llu differ, first %08X (%.9g): sw %04X hw %04X\n", m, n, bad,
++                    (double) from_bits(bad), strata::kernels::f16_from_f32(from_bits(bad)), bad16);
++        return 1;
++    }
++    std::printf("narrow: %llu of %llu sweep values -> fp16 agree\n", n, n);
++
++    const float edge[] = {0.0f, -0.0f, 1.0f, -1.0f,
++                          6.103515625e-05f, 6.097555160522461e-05f,   /* 2^-14, just below it */
++                          5.960464477539063e-08f, 2.9802322387695312e-08f,
++                          1.401298464324817e-45f,                    /* the smallest f32 subnormal */
++                          65504.0f, 65519.0f, 65520.0f, 65536.0f, 1e30f, -1e30f, INFINITY, -INFINITY, NAN};
++    const int ne = (int) (sizeof edge / sizeof edge[0]);
++    float* de = nullptr;
++    cudaMalloc(&de, sizeof edge);
++    cudaMemcpy(de, edge, sizeof edge, cudaMemcpyHostToDevice);
++    cudaMalloc(&dwhich, 4);
++    cudaMemset(dwhich, 0xFF, 4);
++    cudaMemset(dm, 0, 8);
++    targeted_kernel<<<1, 32>>>(de, ne, dm, dnp, dwhich, dbadhw16);
++    cudaDeviceSynchronize();
++    check("targeted");
++    cudaMemcpy(&m, dm, 8, cudaMemcpyDeviceToHost);
++    int which = 0;
++    cudaMemcpy(&which, dwhich, 4, cudaMemcpyDeviceToHost);
++    cudaMemcpy(&bad16, dbadhw16, 2, cudaMemcpyDeviceToHost);
++    if (m) {
++        std::printf("targeted: %llu of %d differ, first #%d %08X: sw %04X hw %04X\n", m, ne, which,
++                    hbits(edge[which]), strata::kernels::f16_from_f32(edge[which]), bad16);
++        return 1;
++    }
++    std::printf("targeted: %d boundary/special values agree\n", ne);
++    std::printf("f16_hw_check: PASS - the hardware conversions are bit-identical to f16_bits.hpp\n");
++    return 0;
++}
+diff --git a/src/kernels/lora_corr_bench.cu b/src/kernels/lora_corr_bench.cu
+new file mode 100644
+index 00000000..35b30384
+--- /dev/null
++++ b/src/kernels/lora_corr_bench.cu
+@@ -0,0 +1,256 @@
++// src/kernels/lora_corr_bench.cu - scratch bench for the runtime correction branches.
++//
++// The served path runs the correction branches at VERIFY-WINDOW shapes (rows = the accepted draft
++// count + 1, up to --spec + 1 = 5), not at rows = 1.  This bench walks rows = 1..8 for the two real
++// shapes and reports, for each: the single-call GPU interval (an event pair around one call, synced -
++// this exposes the dispatch gap a graph node does not pay), the back-to-back interval (one event pair
++// around `reps` calls - the kernel time proper), and the A/B passes apart.  The A/B copies below are
++// the PRE-SWAP software-converter kernels, kept as the before arm: `lora_corr_apply` is the shipping
++// path (hardware round trips since 2026-10-13).
++#include "strata/kernels/f16_bits.hpp"
++#include "strata/kernels/lora_corr.hpp"
++
++#include <cuda_runtime.h>
++
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <vector>
++
++namespace {
++
++void ck(const char* what) {
++    const cudaError_t e = cudaGetLastError();
++    if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
++}
++
++constexpr int A_WARPS = 4;
++constexpr int THREADS = 256;
++constexpr int WARPS = THREADS / 32;
++
++__global__ void empty_kernel() {}
++
++// ---- the current A pass (split-4), copied for the breakdown ----
++__global__ void bench_a_kernel(const uint16_t* __restrict__ a, const float* __restrict__ x, float* __restrict__ t,
++                               int64_t n_rows, int64_t n_in, int64_t rank) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = blockIdx.x;
++    if (i >= n_rows * rank) return;
++    const int64_t tok = i / rank, r = i % rank;
++    const uint16_t* row = a + (size_t) r * n_in;
++    const float* xr = x + (size_t) tok * n_in;
++    const int64_t q0 = (n_in * warp) / A_WARPS;
++    const int64_t q1 = (n_in * (warp + 1)) / A_WARPS;
++    float acc = 0.0f;
++    int64_t k = q0 + lane;
++    for (; k + 96 < q1; k += 128) {
++        const float ea = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(xr[k])) * strata::kernels::f32_from_f16(row[k]);
++        const float eb = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(xr[k + 32])) * strata::kernels::f32_from_f16(row[k + 32]);
++        const float ec = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(xr[k + 64])) * strata::kernels::f32_from_f16(row[k + 64]);
++        const float ed = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(xr[k + 96])) * strata::kernels::f32_from_f16(row[k + 96]);
++        acc += ea; acc += eb; acc += ec; acc += ed;
++    }
++    for (; k < q1; k += 32)
++        acc += strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(xr[k])) * strata::kernels::f32_from_f16(row[k]);
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    __shared__ float part[A_WARPS];
++    if (lane == 0) part[warp] = acc;
++    __syncthreads();
++    if (threadIdx.x == 0) t[(size_t) i] = ((part[0] + part[1]) + part[2]) + part[3];
++}
++
++// ---- diagnostic only: the A pass without the x round-trip (NOT the shipping arithmetic) ----
++__global__ void bench_a_nox_kernel(const uint16_t* __restrict__ a, const float* __restrict__ x, float* __restrict__ t,
++                                   int64_t n_rows, int64_t n_in, int64_t rank) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = blockIdx.x;
++    if (i >= n_rows * rank) return;
++    const int64_t tok = i / rank, r = i % rank;
++    const uint16_t* row = a + (size_t) r * n_in;
++    const float* xr = x + (size_t) tok * n_in;
++    const int64_t q0 = (n_in * warp) / A_WARPS;
++    const int64_t q1 = (n_in * (warp + 1)) / A_WARPS;
++    float acc = 0.0f;
++    int64_t k = q0 + lane;
++    for (; k + 96 < q1; k += 128) {
++        acc += xr[k] * strata::kernels::f32_from_f16(row[k]);
++        acc += xr[k + 32] * strata::kernels::f32_from_f16(row[k + 32]);
++        acc += xr[k + 64] * strata::kernels::f32_from_f16(row[k + 64]);
++        acc += xr[k + 96] * strata::kernels::f32_from_f16(row[k + 96]);
++    }
++    for (; k < q1; k += 32) acc += xr[k] * strata::kernels::f32_from_f16(row[k]);
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    __shared__ float part[A_WARPS];
++    if (lane == 0) part[warp] = acc;
++    __syncthreads();
++    if (threadIdx.x == 0) t[(size_t) i] = ((part[0] + part[1]) + part[2]) + part[3];
++}
++
++// ---- diagnostic only: the A pass with both operands already f32 (no conversions at all) ----
++__global__ void bench_a_f32_kernel(const float* __restrict__ af, const float* __restrict__ x, float* __restrict__ t,
++                                   int64_t n_rows, int64_t n_in, int64_t rank) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = blockIdx.x;
++    if (i >= n_rows * rank) return;
++    const int64_t tok = i / rank, r = i % rank;
++    const float* row = af + (size_t) r * n_in;
++    const float* xr = x + (size_t) tok * n_in;
++    const int64_t q0 = (n_in * warp) / A_WARPS;
++    const int64_t q1 = (n_in * (warp + 1)) / A_WARPS;
++    float acc = 0.0f;
++    int64_t k = q0 + lane;
++    for (; k + 96 < q1; k += 128) {
++        acc += xr[k] * row[k];
++        acc += xr[k + 32] * row[k + 32];
++        acc += xr[k + 64] * row[k + 64];
++        acc += xr[k + 96] * row[k + 96];
++    }
++    for (; k < q1; k += 32) acc += xr[k] * row[k];
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    __shared__ float part[A_WARPS];
++    if (lane == 0) part[warp] = acc;
++    __syncthreads();
++    if (threadIdx.x == 0) t[(size_t) i] = ((part[0] + part[1]) + part[2]) + part[3];
++}
++
++// ---- the current B pass, copied for the breakdown ----
++__global__ void bench_b_kernel(const uint16_t* __restrict__ b, const float* __restrict__ t, float* __restrict__ out,
++                               int64_t n_rows, int64_t rank, int64_t n_out) {
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    const int64_t i = (int64_t) blockIdx.x * WARPS + warp;
++    if (i >= n_rows * n_out) return;
++    const int64_t tok = i / n_out, o = i % n_out;
++    const uint16_t* row = b + (size_t) o * rank;
++    const float* tr = t + (size_t) tok * rank;
++    float acc = 0.0f;
++    int64_t k = lane;
++    for (; k + 96 < rank; k += 128) {
++        const float ea = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(tr[k])) * strata::kernels::f32_from_f16(row[k]);
++        const float eb = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(tr[k + 32])) * strata::kernels::f32_from_f16(row[k + 32]);
++        const float ec = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(tr[k + 64])) * strata::kernels::f32_from_f16(row[k + 64]);
++        const float ed = strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(tr[k + 96])) * strata::kernels::f32_from_f16(row[k + 96]);
++        acc += ea; acc += eb; acc += ec; acc += ed;
++    }
++    for (; k < rank; k += 32)
++        acc += strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(tr[k])) * strata::kernels::f32_from_f16(row[k]);
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
++    if (lane == 0) out[(size_t) tok * n_out + o] += acc;
++}
++
++uint32_t rng_state = 0x12345678u;
++float rnd() {
++    rng_state = rng_state * 1664525u + 1013904223u;
++    return ((float) (rng_state >> 8) / (float) (1u << 24) - 0.5f) * 0.1f;
++}
++
++struct Times {
++    double single = 0, thru = 0;
++};
++
++template <typename F>
++Times time_it(F launch, cudaStream_t s, int reps) {
++    Times t;
++    cudaEvent_t e0, e1;
++    cudaEventCreate(&e0);
++    cudaEventCreate(&e1);
++    for (int i = 0; i < 3; ++i) launch();
++    cudaStreamSynchronize(s);
++    double tot = 0;
++    for (int i = 0; i < reps; ++i) {
++        cudaEventRecord(e0, s);
++        launch();
++        cudaEventRecord(e1, s);
++        cudaStreamSynchronize(s);
++        float ms = 0;
++        cudaEventElapsedTime(&ms, e0, e1);
++        tot += ms;
++    }
++    t.single = tot / reps;
++    cudaEventRecord(e0, s);
++    for (int i = 0; i < reps; ++i) launch();
++    cudaEventRecord(e1, s);
++    cudaStreamSynchronize(s);
++    float ms = 0;
++    cudaEventElapsedTime(&ms, e0, e1);
++    t.thru = ms / reps;
++    cudaEventDestroy(e0);
++    cudaEventDestroy(e1);
++    return t;
++}
++
++struct Shape {
++    const char* name;
++    int64_t n_in, n_out;
++};
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    const int reps = argc > 1 ? std::atoi(argv[1]) : 30;
++    cudaStream_t s;
++    cudaStreamCreate(&s);
++    const int64_t rank = 512;
++    const int64_t max_rows = 8;
++    const Times e = time_it([&] { empty_kernel<<<1, 32, 0, s>>>(); }, s, reps);
++    std::printf("empty kernel: single %.1f us, back-to-back %.1f us\n", e.single * 1000.0, e.thru * 1000.0);
++    const Shape shapes[] = {{"ssm/attn", 6144, 2560}, {"ffn", 2560, 2560}};
++    for (const Shape& sh : shapes) {
++        std::vector<uint16_t> a((size_t) (rank * sh.n_in)), b((size_t) (sh.n_out * rank));
++        std::vector<float> x((size_t) (max_rows * sh.n_in)), t((size_t) (max_rows * rank)),
++            out((size_t) (max_rows * sh.n_out), 0.5f);
++        for (auto& v : a) v = strata::kernels::f16_from_f32(rnd());
++        for (auto& v : b) v = strata::kernels::f16_from_f32(rnd());
++        for (auto& v : x) v = rnd();
++        uint16_t *da = nullptr, *db = nullptr, *dx16 = nullptr, *dt16 = nullptr;
++        float *dx = nullptr, *dt = nullptr, *dout = nullptr;
++        cudaMalloc(&da, a.size() * 2);
++        cudaMalloc(&db, b.size() * 2);
++        cudaMalloc(&dx, x.size() * 4);
++        cudaMalloc(&dt, t.size() * 4);
++        cudaMalloc(&dt16, t.size() * 2);
++        cudaMalloc(&dout, out.size() * 4);
++        const int64_t round_rows = std::min<int64_t>(max_rows, strata::kernels::kLoraCorrRoundRows);
++        cudaMalloc(&dx16, (size_t) round_rows * sh.n_in * 2);
++        cudaMemcpy(da, a.data(), a.size() * 2, cudaMemcpyHostToDevice);
++        cudaMemcpy(db, b.data(), b.size() * 2, cudaMemcpyHostToDevice);
++        cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
++        cudaMemcpy(dout, out.data(), out.size() * 4, cudaMemcpyHostToDevice);
++        std::vector<float> af((size_t) (rank * sh.n_in));
++        for (size_t i = 0; i < af.size(); ++i) af[i] = strata::kernels::f32_from_f16(a[i]);
++        float* daf = nullptr;
++        cudaMalloc(&daf, af.size() * 4);
++        cudaMemcpy(daf, af.data(), af.size() * 4, cudaMemcpyHostToDevice);
++        ck("setup");
++        std::printf("\n%s  (n_in %lld, rank %lld, n_out %lld)\n", sh.name, (long long) sh.n_in, (long long) rank,
++                    (long long) sh.n_out);
++        std::printf("  rows |   apply s    apply t   |    A s     A t    |    B s     B t    |  nox t   f32A t\n");
++        for (int64_t rows = 1; rows <= max_rows; ++rows) {
++            const Times ap = time_it(
++                [&] { strata::kernels::lora_corr_apply(da, db, dx, dx16, dt16, dout, rows, sh.n_in, rank, sh.n_out, s); }, s, reps);
++            const unsigned pa = (unsigned) (rows * rank);
++            const Times ta = time_it([&] { bench_a_kernel<<<pa, 32 * A_WARPS, 0, s>>>(da, dx, dt, rows, sh.n_in, rank); }, s, reps);
++            const unsigned pb = (unsigned) ((rows * sh.n_out + WARPS - 1) / WARPS);
++            const Times tb = time_it([&] { bench_b_kernel<<<pb, THREADS, 0, s>>>(db, dt, dout, rows, rank, sh.n_out); }, s, reps);
++            const Times tnox = time_it([&] { bench_a_nox_kernel<<<pa, 32 * A_WARPS, 0, s>>>(da, dx, dt, rows, sh.n_in, rank); }, s, reps);
++            const Times tf32 = time_it([&] { bench_a_f32_kernel<<<pa, 32 * A_WARPS, 0, s>>>(daf, dx, dt, rows, sh.n_in, rank); }, s, reps);
++            std::printf("  %4lld | %8.1f %10.1f   | %8.1f %8.1f   | %8.1f %8.1f   | %7.1f %8.1f\n", (long long) rows,
++                        ap.single * 1000.0, ap.thru * 1000.0, ta.single * 1000.0, ta.thru * 1000.0, tb.single * 1000.0,
++                        tb.thru * 1000.0, tnox.thru * 1000.0, tf32.thru * 1000.0);
++            ck("loop");
++        }
++        cudaFree(daf);
++        cudaFree(da);
++        cudaFree(db);
++        cudaFree(dx16);
++        cudaFree(dx);
++        cudaFree(dt);
++        cudaFree(dt16);
++        cudaFree(dout);
++    }
++    cudaStreamDestroy(s);
++    return 0;
++}
+diff --git a/src/kernels/lora_corr_parity.cpp b/src/kernels/lora_corr_parity.cpp
+new file mode 100644
+index 00000000..693bff3b
+--- /dev/null
++++ b/src/kernels/lora_corr_parity.cpp
+@@ -0,0 +1,189 @@
++// src/kernels/lora_corr_parity.cpp - the runtime correction branches' kernels against a host reference
++// that reproduces every pass exactly: the f16 rounding of x, the four-quarter split of the A reduction in
++// uint4 groups with its four accumulator chains, the 16/8/4/2/1 lane tree, the left-to-right combine of the
++// partials, and the B pass's lane-strided accumulation.  Every blk.N.<site>.weight.lora_{a,b} pair in the
++// GGUF is applied to three synthetic activation rows (f32), and `out += B (A x)` must match the reference
++// BIT FOR BIT, so a reordered reduction (which would break decode/prefill/verify agreement) fails rather
++// than skims past a tolerance.
++#include "strata/artifact/gguf_reader.hpp"
++#include "strata/artifact/dequant.hpp"
++#include "strata/kernels/f16_bits.hpp"
++#include "strata/kernels/lora_corr.hpp"
++
++#include <cuda_runtime.h>
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++namespace {
++
++using strata::kernels::f16_from_f32;
++using strata::kernels::f32_from_f16;
++
++/// The A pass's 8-element product, host side: the same eight statements the kernel's `dot8` writes.
++float dot8(const uint16_t* arow, const uint16_t* xrow) {
++    float s = f32_from_f16(xrow[0]) * f32_from_f16(arow[0]);
++    s += f32_from_f16(xrow[1]) * f32_from_f16(arow[1]);
++    s += f32_from_f16(xrow[2]) * f32_from_f16(arow[2]);
++    s += f32_from_f16(xrow[3]) * f32_from_f16(arow[3]);
++    s += f32_from_f16(xrow[4]) * f32_from_f16(arow[4]);
++    s += f32_from_f16(xrow[5]) * f32_from_f16(arow[5]);
++    s += f32_from_f16(xrow[6]) * f32_from_f16(arow[6]);
++    s += f32_from_f16(xrow[7]) * f32_from_f16(arow[7]);
++    return s;
++}
++
++/// The kernel's A pass, host side: four quarters of the reduction axis in uint4 groups, each quarter's lane
++/// l taking groups q0+l, q0+l+32, ..., the four accumulator chains of the 4x-unrolled loop, the
++/// ((acc0+acc1)+(acc2+acc3)) combine, the 16/8/4/2/1 tree and the left-to-right quarter combine, the
++/// result rounded with `f16_from_f32` (the kernel's write).  `x16` is the f16 rounding of the activation,
++/// as the kernel's round pass produces it.
++std::vector<uint16_t> ref_a(const std::vector<uint16_t>& a, const std::vector<uint16_t>& x16, int64_t n_rows,
++                            int64_t n_in, int64_t rank) {
++    constexpr int A_WARPS = 4;
++    std::vector<uint16_t> t((size_t) (n_rows * rank));
++    const int64_t n8 = n_in / 8;
++    for (int64_t tok = 0; tok < n_rows; ++tok) {
++        for (int64_t r = 0; r < rank; ++r) {
++            const uint16_t* arow = a.data() + (size_t) r * n_in;
++            const uint16_t* xrow = x16.data() + (size_t) tok * n_in;
++            float part[A_WARPS];
++            for (int q = 0; q < A_WARPS; ++q) {
++                const int64_t q0 = (n8 * q) / A_WARPS;
++                const int64_t q1 = (n8 * (q + 1)) / A_WARPS;
++                float p[32] = {};
++                for (int lane = 0; lane < 32; ++lane) {
++                    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
++                    int64_t k = q0 + lane;
++                    for (; k + 96 < q1; k += 128) {
++                        acc0 += dot8(arow + 8 * k, xrow + 8 * k);
++                        acc1 += dot8(arow + 8 * (k + 32), xrow + 8 * (k + 32));
++                        acc2 += dot8(arow + 8 * (k + 64), xrow + 8 * (k + 64));
++                        acc3 += dot8(arow + 8 * (k + 96), xrow + 8 * (k + 96));
++                    }
++                    for (; k < q1; k += 32) acc0 += dot8(arow + 8 * k, xrow + 8 * k);
++                    p[lane] = (acc0 + acc1) + (acc2 + acc3);
++                }
++                for (int off = 16; off > 0; off >>= 1)
++                    for (int l = 0; l < off; ++l) p[l] += p[l + off];
++                part[q] = p[0];
++            }
++            t[(size_t) (tok * rank + r)] = f16_from_f32(((part[0] + part[1]) + part[2]) + part[3]);
++        }
++    }
++    return t;
++}
++
++// The kernel's B pass: out[tok][o] += sum_k b[o][k] * t16[tok][k], one warp per output, lanes striding
++// the reduction axis in uint4 groups of 8 f16 with `dot8` per group, then the 16/8/4/2/1 tree.
++void ref_b_add(const std::vector<uint16_t>& b, const std::vector<uint16_t>& t16, std::vector<float>& out,
++               int64_t n_rows, int64_t rank, int64_t n_out) {
++    const int64_t n8 = rank / 8;
++    for (int64_t tok = 0; tok < n_rows; ++tok) {
++        for (int64_t o = 0; o < n_out; ++o) {
++            const uint16_t* brow = b.data() + (size_t) o * rank;
++            const uint16_t* trow = t16.data() + (size_t) tok * rank;
++            float p[32] = {};
++            for (int lane = 0; lane < 32; ++lane) {
++                float acc = 0.0f;
++                for (int64_t k = lane; k < n8; k += 32) acc += dot8(brow + 8 * k, trow + 8 * k);
++                p[lane] = acc;
++            }
++            for (int off = 16; off > 0; off >>= 1)
++                for (int l = 0; l < off; ++l) p[l] += p[l + off];
++            out[(size_t) (tok * n_out + o)] += p[0];
++        }
++    }
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    if (argc != 2) {
++        std::fprintf(stderr, "usage: lora_corr_parity <gguf-with-lora-corrections>\n");
++        return 2;
++    }
++    strata::GgufFile gguf(argv[1]);
++    constexpr int64_t NT = 3;
++    cudaStream_t s;
++    cudaStreamCreate(&s);
++    int failures = 0, tested = 0;
++    for (const auto& t : gguf.tensors()) {
++        const std::string name = t.name;
++        const std::string suf = ".lora_a";
++        if (name.size() < suf.size() || name.compare(name.size() - suf.size(), suf.size(), suf) != 0) continue;
++        const std::string bname = name.substr(0, name.size() - suf.size()) + ".lora_b";
++        const auto* bt = gguf.find(bname);
++        if (bt == nullptr || t.type != 1 /*F16*/ || bt->type != 1 || t.shape.size() != 2 || bt->shape.size() != 2) {
++            std::printf("%s: not an F16 a/b pair\n", name.c_str());
++            ++failures;
++            continue;
++        }
++        const int64_t n_in = t.shape[0], rank = t.shape[1], n_out = bt->shape[1];
++        if (bt->shape[0] != rank) {
++            std::printf("%s: b shape [%lld, %lld] does not pair with rank %lld\n", bname.c_str(),
++                        (long long) bt->shape[0], (long long) bt->shape[1], (long long) rank);
++            ++failures;
++            continue;
++        }
++        if (rank > strata::kernels::kLoraCorrMaxRank) {
++            std::printf("%s: rank %lld over the scratch\n", name.c_str(), (long long) rank);
++            ++failures;
++            continue;
++        }
++        if (n_in % 8 != 0) {
++            std::printf("%s: n_in %lld is not a multiple of 8\n", name.c_str(), (long long) n_in);
++            ++failures;
++            continue;
++        }
++        const uint8_t* ab = gguf.tensor_data(t);
++        const uint8_t* bb = gguf.tensor_data(*bt);
++        std::vector<uint16_t> a((size_t) (n_in * rank)), b((size_t) (rank * n_out));
++        std::memcpy(a.data(), ab, a.size() * 2);
++        std::memcpy(b.data(), bb, b.size() * 2);
++        std::vector<float> x((size_t) (NT * n_in)), want((size_t) (NT * n_out), 0.5f);
++        for (int64_t k = 0; k < NT * n_in; ++k)
++            x[(size_t) k] = 0.03f * std::sin(0.07f * (float) k) + 0.002f * (float) (k % 5 - 2);
++        // The kernel rounds x inside `lora_corr_apply`; the reference mirrors that with the same converter.
++        std::vector<uint16_t> x16(x.size());
++        for (size_t k = 0; k < x.size(); ++k) x16[k] = f16_from_f32(x[k]);
++
++        const std::vector<uint16_t> tref = ref_a(a, x16, NT, n_in, rank);
++        ref_b_add(b, tref, want, NT, rank, n_out);
++
++        void *da = nullptr, *db = nullptr, *dx = nullptr, *dx16 = nullptr, *dt16 = nullptr, *dout = nullptr;
++        cudaMalloc(&da, a.size() * 2);
++        cudaMalloc(&db, b.size() * 2);
++        cudaMalloc(&dx, x.size() * 4);
++        cudaMalloc(&dx16, x16.size() * 2);
++        cudaMalloc(&dt16, (size_t) (NT * rank) * 2);
++        cudaMalloc(&dout, (size_t) (NT * n_out) * 4);
++        cudaMemcpy(da, a.data(), a.size() * 2, cudaMemcpyHostToDevice);
++        cudaMemcpy(db, b.data(), b.size() * 2, cudaMemcpyHostToDevice);
++        cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
++        std::vector<float> init((size_t) (NT * n_out), 0.5f), got;
++        cudaMemcpy(dout, init.data(), init.size() * 4, cudaMemcpyHostToDevice);
++        strata::kernels::lora_corr_apply((const uint16_t*) da, (const uint16_t*) db, (const float*) dx,
++                                         (uint16_t*) dx16, (uint16_t*) dt16, (float*) dout, NT, n_in, rank, n_out, s);
++        cudaStreamSynchronize(s);
++        got.resize((size_t) (NT * n_out));
++        cudaMemcpy(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost);
++        size_t differ = 0;
++        double max_err = 0.0;
++        for (size_t i = 0; i < got.size(); ++i) {
++            differ += std::memcmp(&got[i], &want[i], 4) != 0;
++            max_err = std::max(max_err, (double) std::fabs(got[i] - want[i]));
++        }
++        std::printf("lora %-48s in %5lld rank %lld out %lld: %zu of %zu differ, max|err| %.3e\n", name.c_str(),
++                    (long long) n_in, (long long) rank, (long long) n_out, differ, got.size(), max_err);
++        if (differ) ++failures;
++        cudaFree(da); cudaFree(db); cudaFree(dx); cudaFree(dx16); cudaFree(dt16); cudaFree(dout);
++        ++tested;
++    }
++    cudaStreamDestroy(s);
++    std::printf("lora_corr_parity: %d pairs tested, %d failures\n", tested, failures);
++    return failures ? 1 : 0;
++}
+diff --git a/src/kernels/ple_q4_parity.cpp b/src/kernels/ple_q4_parity.cpp
+new file mode 100644
+index 00000000..2c720db9
+--- /dev/null
++++ b/src/kernels/ple_q4_parity.cpp
+@@ -0,0 +1,62 @@
++// Real-artifact Q4_0 PLE rows against ggml's reference dequantizer.
++// Scion releases ship the 28.8 GB n-gram table as Q4_0 (90-byte rows, same
++// stride as IQ4_NL); this is the parity check for the reader branch added in
++// src/kernels/ngram.cpp.
++#define NOMINMAX
++#include "strata/artifact/gguf_reader.hpp"
++#include "strata/kernels/ngram.hpp"
++#include "ggml.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <string>
++#include <vector>
++
++int main(int argc, char** argv) {
++    if (argc != 2) {
++        std::fprintf(stderr, "usage: ple_q4_parity <gguf-containing-ple>\n");
++        return 2;
++    }
++    strata::GgufFile gguf(argv[1]);
++    const auto* tensor = gguf.find("per_layer_token_embd.weight");
++    if (!tensor || tensor->type != 2 || tensor->shape.size() != 2 || tensor->shape[0] != 160) {
++        std::fprintf(stderr, "expected Q4_0 PLE [160, N]\n");
++        return 2;
++    }
++    strata::kernels::PleIoOptions options;
++    options.mode = strata::kernels::PleIo::Direct;
++    strata::kernels::PleTable table;
++    std::string err;
++    if (!table.open(argv[1], err, options)) {
++        std::fprintf(stderr, "%s\n", err.c_str());
++        return 1;
++    }
++    const auto* traits = ggml_get_type_traits(GGML_TYPE_Q4_0);
++    const uint8_t* bytes = gguf.tensor_data(*tensor);
++    const uint32_t probes[] = {0, 1, 12345, 20000003, (uint32_t) (table.rows() - 1)};
++    double max_abs = 0.0;
++    for (uint32_t row : probes) {
++        float got[160], want[160];
++        table.read_row(row, got);
++        traits->to_float(bytes + (size_t) row * 90, want, 160);
++        for (int i = 0; i < 160; ++i)
++            max_abs = std::max(max_abs, (double) std::fabs(got[i] - want[i]));
++    }
++    uint32_t rows[16];
++    for (int i = 0; i < 16; ++i) rows[i] = probes[i % 5];
++    float batch[16 * 160];
++    if (!table.issue(rows) || !table.collect(batch, err)) {
++        std::fprintf(stderr, "collect: %s\n", err.c_str());
++        return 1;
++    }
++    for (int h = 0; h < 16; ++h) {
++        float want[160];
++        traits->to_float(bytes + (size_t) rows[h] * 90, want, 160);
++        for (int i = 0; i < 160; ++i)
++            max_abs = std::max(max_abs, (double) std::fabs(batch[h * 160 + i] - want[i]));
++    }
++    std::printf("Q4_0 PLE: %zu rows, max_abs %.3e %s\n", (size_t) table.rows(), max_abs,
++                max_abs <= 1e-6 ? "PASS" : "FAIL");
++    return max_abs <= 1e-6 ? 0 : 1;
++}
+diff --git a/src/kernels/ptq1_0_parity.cpp b/src/kernels/ptq1_0_parity.cpp
+new file mode 100644
+index 00000000..b49f13b8
+--- /dev/null
++++ b/src/kernels/ptq1_0_parity.cpp
+@@ -0,0 +1,364 @@
++// Real-artifact PTQ1_0 expert rows, two paths:
++//
++//  (CPU) native_fmt -> native_gu_rows / native_down_rows against a float reference computed from the same GGUF
++//        bytes (trit decode * fp16 d, dotted with the dequantized Q8_K activation).  Validates the geometry
++//        (row sizes, blob offsets), the decode, and the scale handling.
++//  (GPU) the same blob through native_expert_supported / native_expert_layout, native_expert_grouped (both the
++//        decode-once and the per-entry kernels, bitwise equal to each other), iq_mmvq, and the prompt-path
++//        dequantizers iq_dequant_f16/_f32/_gu_f16 against the same float reference with the device's own q8_1
++//        activations (the pattern of native_expert_parity).
++#define NOMINMAX
++#include "strata/artifact/gguf_reader.hpp"
++#include "strata/artifact/dequant.hpp"
++#include "strata/kernels/cpu/native_expert.hpp"
++#include "strata/kernels/cpu/ptq1_0.hpp"
++#include "strata/kernels/iq_kernels.hpp"
++
++#include "ggml.h"
++#include "ggml-cpu.h"
++
++#include <cuda_runtime.h>
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++namespace {
++
++namespace sk = strata::kernels;
++
++// Q8_K block: { float d; int8_t qs[256]; int16_t bsums[16]; } = 292 bytes.
++float q8k_value(const uint8_t* act, int64_t idx) {
++    const uint8_t* b = act + (idx / 256) * 292;
++    float d;
++    std::memcpy(&d, b, 4);
++    const int8_t q = (int8_t) b[4 + (idx % 256)];
++    return d * (float) q;
++}
++
++// q8_1 block: { ggml_half2 ds; int8_t qs[32]; } = 36 bytes.
++float q81_value(const uint8_t* act, int64_t idx) {
++    const uint8_t* b = act + (idx / 32) * 36;
++    return strata::fp16_to_fp32(strata::read_u16(b)) * (float) (int8_t) b[4 + (idx % 32)];
++}
++
++float row_dot_ref(const uint8_t* row, const float* act, int64_t n) {
++    // float reference: per 128-block, trits * d, dotted with the float activation
++    const int64_t nb = n / 128;
++    float acc = 0.f;
++    int8_t v[128];
++    for (int64_t b = 0; b < nb; ++b) {
++        const uint8_t* blk = row + b * 28;
++        strata::kernels::cpu::ptq1_0_decode128(blk, v);
++        const float d = strata::fp16_to_fp32(strata::read_u16(blk + 26));
++        for (int k = 0; k < 128; ++k) acc += (float) v[k] * d * act[b * 128 + k];
++    }
++    return acc;
++}
++
++// The same decode, one row to floats (for the dequantizer and expert references).
++std::vector<float> row_dequant_ref(const uint8_t* row, int64_t n) {
++    const int64_t nb = n / 128;
++    std::vector<float> out((size_t) n);
++    int8_t v[128];
++    for (int64_t b = 0; b < nb; ++b) {
++        const uint8_t* blk = row + b * 28;
++        strata::kernels::cpu::ptq1_0_decode128(blk, v);
++        const float d = strata::fp16_to_fp32(strata::read_u16(blk + 26));
++        for (int k = 0; k < 128; ++k) out[(size_t) (b * 128 + k)] = d * (float) v[k];
++    }
++    return out;
++}
++
++double rel(const std::vector<float>& a, const std::vector<float>& b) {
++    double n = 0, d = 0;
++    for (size_t i = 0; i < a.size(); ++i) { n += std::fabs((double) a[i] - b[i]); d += std::fabs((double) b[i]); }
++    return n / (d + 1e-30);
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    if (argc != 2) {
++        std::fprintf(stderr, "usage: ptq1_0_parity <gguf-with-ptq1_0-experts>\n");
++        return 2;
++    }
++    strata::GgufFile gguf(argv[1]);
++    const auto* gate = gguf.find("blk.0.ffn_gate_exps.weight");
++    const auto* up = gguf.find("blk.0.ffn_up_exps.weight");
++    const auto* down = gguf.find("blk.0.ffn_down_exps.weight");
++    if (!gate || !up || !down || gate->type != 143 || up->type != 143 || down->type != 143 ||
++        gate->shape.size() != 3 || gate->shape[0] != 2560 || gate->shape[1] != 640) {
++        std::fprintf(stderr, "expected PTQ1_0 expert tensors [2560, 640, E]\n");
++        return 2;
++    }
++    const int64_t H = (int64_t) gate->shape[0], F = (int64_t) gate->shape[1];
++    const int64_t gu_row = H / 128 * 28, d_row = F / 128 * 28;
++    const uint8_t* gb = gguf.tensor_data(*gate);
++    const uint8_t* ub = gguf.tensor_data(*up);
++    const uint8_t* db = gguf.tensor_data(*down);
++
++    // one expert's blob, the pack's layout: [gate F rows | up F rows | down H rows]
++    std::vector<uint8_t> blob((size_t) (2 * F * gu_row + H * d_row));
++    std::memcpy(blob.data(), gb, (size_t) F * gu_row);
++    std::memcpy(blob.data() + F * gu_row, ub, (size_t) F * gu_row);
++    std::memcpy(blob.data() + 2 * F * gu_row, db, (size_t) H * d_row);
++
++    strata::kernels::cpu::NativeFmt f;
++    std::string err;
++    if (!strata::kernels::cpu::native_fmt(143, 143, H, F, f, err)) {
++        std::fprintf(stderr, "native_fmt: %s\n", err.c_str());
++        return 1;
++    }
++    if (f.gu_row != (size_t) gu_row || f.d_row != (size_t) d_row || f.bytes != blob.size()) {
++        std::fprintf(stderr, "geometry mismatch: gu_row %zu/%lld d_row %zu/%lld bytes %zu/%zu\n",
++                     f.gu_row, (long long) gu_row, f.d_row, (long long) d_row, f.bytes, blob.size());
++        return 1;
++    }
++
++    // activation for gate/up: x in R^H
++    std::vector<float> x((size_t) H);
++    for (int64_t i = 0; i < H; ++i) x[i] = 0.05f * std::sin(0.11f * (float) i) + 0.01f * (float) ((i * 37) % 7 - 3);
++    const auto* tqc = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K);
++    if (tqc == nullptr || tqc->from_float == nullptr) {
++        std::fprintf(stderr, "ggml-cpu has no Q8_K from_float\n");
++        return 3;
++    }
++    std::vector<uint8_t> act(strata::kernels::cpu::kNativeActBytes);
++    strata::kernels::cpu::native_quant_act(f, x.data(), act.data());
++    std::vector<float> ax((size_t) H);
++    for (int64_t i = 0; i < H; ++i) ax[(size_t) i] = q8k_value(act.data(), i);
++
++    const int64_t r0 = 0, r1 = 5;
++    std::vector<float> ff((size_t) (r1 - r0));
++    float* ffp[1] = {ff.data()};
++    const void* actp[1] = {act.data()};
++    strata::kernels::cpu::native_gu_rows(f, blob.data(), actp, 1, ffp, (int) r0, (int) r1);
++
++    double max_g = 0.0;
++    for (int64_t r = r0; r < r1; ++r) {
++        const float g = row_dot_ref(blob.data() + (size_t) r * gu_row, ax.data(), H);
++        const float u = row_dot_ref(blob.data() + F * gu_row + (size_t) r * gu_row, ax.data(), H);
++        const float want = (g / (1.f + std::exp(-g))) * u;
++        max_g = std::max(max_g, (double) std::fabs(ff[(size_t) (r - r0)] - want));
++    }
++
++    // down: activation in R^F, rows over H
++    std::vector<float> h((size_t) F);
++    for (int64_t i = 0; i < F; ++i) h[i] = 0.03f * std::cos(0.07f * (float) i);
++    std::vector<uint8_t> hq(strata::kernels::cpu::kNativeHBytes);
++    strata::kernels::cpu::native_quant_h(f, h.data(), hq.data());
++    std::vector<float> ah((size_t) F);
++    for (int64_t i = 0; i < F; ++i) ah[(size_t) i] = q8k_value(hq.data(), i);
++    std::vector<float> out((size_t) (r1 - r0));
++    float* outp[1] = {out.data()};
++    const void* hqp[1] = {hq.data()};
++    strata::kernels::cpu::native_down_rows(f, blob.data(), hqp, 1, outp, (int) r0, (int) r1);
++
++    double max_d = 0.0;
++    for (int64_t r = r0; r < r1; ++r) {
++        const float want = row_dot_ref(blob.data() + 2 * F * gu_row + (size_t) r * d_row, ah.data(), F);
++        max_d = std::max(max_d, (double) std::fabs(out[(size_t) (r - r0)] - want));
++    }
++
++    std::printf("PTQ1_0 experts: gu max|err| %.3e, down max|err| %.3e %s\n", max_g, max_d,
++                (max_g <= 1e-3 && max_d <= 1e-3) ? "PASS" : "FAIL");
++    int failures = (max_g <= 1e-3 && max_d <= 1e-3) ? 0 : 1;
++
++    // ---------------------------------------------------------------- (GPU) the same blob on the device
++    // NT tokens through one group; the reference follows the device's own q8_1 activations, and the down
++    // reference reads the device-quantized h out of the grouped kernels' scratch (its layout is the documented
++    // native_expert_scratch_bytes contract), so each stage is compared against exactly what the next kernel saw.
++    constexpr int NT = 3;
++    if (!sk::native_expert_supported(143, 143, H, F)) {
++        std::printf("GPU: native_expert_supported(143, 143, 2560, 640) is false\n");
++        return 1;
++    }
++    const sk::NativeExpertLayout L = sk::native_expert_layout(143, 143, H, F);
++    if (L.gu_row != f.gu_row || L.d_row != f.d_row || L.up_off != f.up_off || L.down_off != f.down_off ||
++        L.bytes != f.bytes || sk::iq_row_bytes(143, H) != (size_t) gu_row ||
++        sk::iq_row_bytes(143, F) != (size_t) d_row) {
++        std::printf("GPU: native_expert_layout / iq_row_bytes mismatch\n");
++        return 1;
++    }
++
++    std::vector<float> xs((size_t) NT * H);
++    for (int k = 0; k < NT; ++k)
++        for (int64_t i = 0; i < H; ++i)
++            xs[(size_t) k * H + i] =
++                0.05f * std::sin(0.11f * (float) i + 0.7f * (float) k) + 0.01f * (float) ((i * 37 + k) % 7 - 3);
++
++    cudaStream_t s;
++    cudaStreamCreate(&s);
++    uint8_t* dblob = nullptr;
++    float* dx = nullptr;
++    uint8_t* dxq = nullptr;
++    void* dscr = nullptr;
++    float* dout = nullptr;
++    unsigned long long* dptr = nullptr;
++    int32_t *dstart = nullptr, *dn = nullptr, *ddst = nullptr, *dtok = nullptr;
++    cudaMalloc((void**) &dblob, blob.size());
++    cudaMalloc((void**) &dx, xs.size() * 4);
++    cudaMalloc((void**) &dxq, (size_t) NT * H / 32 * 36);
++    const size_t scr_bytes = sk::native_expert_scratch_bytes(NT, F);
++    cudaMalloc(&dscr, scr_bytes);
++    cudaMalloc((void**) &dout, (size_t) NT * H * 4);
++    cudaMalloc((void**) &dptr, 8);
++    cudaMalloc((void**) &dstart, 8);
++    cudaMalloc((void**) &dn, 4);
++    cudaMalloc((void**) &ddst, NT * 4);
++    cudaMalloc((void**) &dtok, NT * 4);
++    cudaMemcpy(dblob, blob.data(), blob.size(), cudaMemcpyHostToDevice);
++    cudaMemcpy(dx, xs.data(), xs.size() * 4, cudaMemcpyHostToDevice);
++    const unsigned long long p = (unsigned long long) dblob;
++    const int32_t st[2] = {0, NT}, one = 1, idx[NT] = {0, 1, 2};
++    cudaMemcpy(dptr, &p, 8, cudaMemcpyHostToDevice);
++    cudaMemcpy(dstart, st, 8, cudaMemcpyHostToDevice);
++    cudaMemcpy(dn, &one, 4, cudaMemcpyHostToDevice);
++    cudaMemcpy(ddst, idx, NT * 4, cudaMemcpyHostToDevice);
++    cudaMemcpy(dtok, idx, NT * 4, cudaMemcpyHostToDevice);
++    sk::quantize_q8_1_rows((const float*) dx, NT, H, dxq, s);
++    std::vector<uint8_t> xq((size_t) NT * H / 32 * 36);
++    cudaMemcpy(xq.data(), dxq, xq.size(), cudaMemcpyDeviceToHost);
++    sk::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
++    cudaStreamSynchronize(s);
++    std::vector<float> got((size_t) NT * H);
++    cudaMemcpy(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost);
++
++    {   // the decode-once kernels vs the per-entry ones, bit for bit (the Split<143> contract)
++        std::vector<float> old_g(got.size());
++        const bool was = sk::iq_old_kernels();
++        sk::iq_set_old_kernels(!was);
++        sk::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
++        sk::iq_set_old_kernels(was);
++        cudaStreamSynchronize(s);
++        cudaMemcpy(old_g.data(), dout, old_g.size() * 4, cudaMemcpyDeviceToHost);
++        const bool same = std::memcmp(old_g.data(), got.data(), got.size() * 4) == 0;
++        std::printf("GPU: decode-once vs per-entry expert kernels: %s\n", same ? "bitwise equal" : "MISMATCH");
++        if (!same) ++failures;
++    }
++
++    {   // the reference: full expert per token, over the device's own quantized activations
++        std::vector<float> G((size_t) F * H), U((size_t) F * H), D((size_t) H * F);
++        for (int64_t r = 0; r < F; ++r) {
++            const auto g = row_dequant_ref(blob.data() + (size_t) r * gu_row, H);
++            const auto u = row_dequant_ref(blob.data() + F * gu_row + (size_t) r * gu_row, H);
++            std::memcpy(G.data() + (size_t) r * H, g.data(), (size_t) H * 4);
++            std::memcpy(U.data() + (size_t) r * H, u.data(), (size_t) H * 4);
++        }
++        for (int64_t r = 0; r < H; ++r) {
++            const auto d = row_dequant_ref(blob.data() + 2 * F * gu_row + (size_t) r * d_row, F);
++            std::memcpy(D.data() + (size_t) r * F, d.data(), (size_t) F * 4);
++        }
++        // the scratch layout: gate (0), up (fa), h (2fa), hq (3fa).  The default path fuses SwiGLU + q8_1
++        // (swiglu_q8_1_entries_kernel writes hq only), so the f32 h image only exists on the v1 path: run
++        // that once for the h comparison, then the default once for the quantized h the down kernel read.
++        const size_t fa = ((size_t) NT * F * 4 + 255) & ~(size_t) 255;
++        std::vector<float> hdev((size_t) NT * F);
++        std::vector<uint8_t> hdevq((size_t) NT * (F / 32) * 36);
++        sk::native_grouped_set_v1(true);
++        sk::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
++        cudaStreamSynchronize(s);
++        cudaMemcpy(hdev.data(), (const uint8_t*) dscr + 2 * fa, hdev.size() * 4, cudaMemcpyDeviceToHost);
++        sk::native_grouped_set_v1(false);
++        sk::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
++        cudaStreamSynchronize(s);
++        cudaMemcpy(hdevq.data(), (const uint8_t*) dscr + 3 * fa, hdevq.size(), cudaMemcpyDeviceToHost);
++        std::vector<float> want_h((size_t) NT * F), want((size_t) NT * H);
++        for (int k = 0; k < NT; ++k) {
++            std::vector<float> xa((size_t) H);
++            for (int64_t i = 0; i < H; ++i) xa[(size_t) i] = q81_value(xq.data(), (int64_t) k * H + i);
++            for (int64_t r = 0; r < F; ++r) {
++                double g = 0, u = 0;
++                for (int64_t i = 0; i < H; ++i) {
++                    g += (double) G[(size_t) (r * H + i)] * xa[(size_t) i];
++                    u += (double) U[(size_t) (r * H + i)] * xa[(size_t) i];
++                }
++                want_h[(size_t) (k * F + r)] = (float) (g / (1.0 + std::exp(-g)) * u);
++            }
++            for (int64_t r = 0; r < H; ++r) {
++                double o = 0;
++                for (int64_t i = 0; i < F; ++i) o += (double) D[(size_t) (r * F + i)] * q81_value(hdevq.data(), (int64_t) k * F + i);
++                want[(size_t) (k * H + r)] = (float) o;
++            }
++        }
++        const double rh = rel(hdev, want_h), rd = rel(got, want);
++        std::printf("GPU: swiglu h vs reference rel %.2e; expert out vs reference (device q8_1 h): rel %.2e %s\n", rh, rd,
++                    (rh < 1e-3 && rd < 1e-3) ? "" : "MISMATCH");
++        if (!(rh < 1e-3) || !(rd < 1e-3)) ++failures;
++    }
++
++    {   // iq_mmvq: the gate rows against token 0's q8_1 activation
++        float* dy = nullptr;
++        cudaMalloc((void**) &dy, (size_t) F * 4);
++        sk::iq_mmvq(143, dblob, dxq, dy, (int) H, (int) F, 1, s);
++        cudaStreamSynchronize(s);
++        std::vector<float> m0((size_t) F);
++        cudaMemcpy(m0.data(), dy, m0.size() * 4, cudaMemcpyDeviceToHost);
++        cudaFree(dy);
++        std::vector<float> xa((size_t) H), want((size_t) F);
++        for (int64_t i = 0; i < H; ++i) xa[(size_t) i] = q81_value(xq.data(), i);
++        for (int64_t r = 0; r < F; ++r) {
++            const auto g = row_dequant_ref(blob.data() + (size_t) r * gu_row, H);
++            double acc = 0;
++            for (int64_t i = 0; i < H; ++i) acc += (double) g[(size_t) i] * xa[(size_t) i];
++            want[(size_t) r] = (float) acc;
++        }
++        const double rq = rel(m0, want);
++        std::printf("GPU: iq_mmvq gate rows vs reference: rel %.2e %s\n", rq, rq < 1e-3 ? "" : "MISMATCH");
++        if (!(rq < 1e-3)) ++failures;
++    }
++
++    {   // the prompt-path dequantizers against the same decode (iq_dequant_* = to_float), bit for bit
++        std::vector<float> G((size_t) F * H), U((size_t) F * H), Gw((size_t) F * H);
++        for (int64_t r = 0; r < F; ++r) {
++            const auto g = row_dequant_ref(blob.data() + (size_t) r * gu_row, H);
++            const auto u = row_dequant_ref(blob.data() + F * gu_row + (size_t) r * gu_row, H);
++            std::memcpy(G.data() + (size_t) r * H, g.data(), (size_t) H * 4);
++            std::memcpy(U.data() + (size_t) r * H, u.data(), (size_t) H * 4);
++        }
++        float* dqf = nullptr;
++        uint16_t* dhf = nullptr;
++        uint16_t* dgu = nullptr;
++        cudaMalloc((void**) &dqf, (size_t) F * H * 4);
++        cudaMalloc((void**) &dhf, (size_t) F * H * 2);
++        cudaMalloc((void**) &dgu, (size_t) 2 * F * H * 2);
++        sk::iq_dequant_f32(143, dblob, F * H, dqf, s);
++        sk::iq_dequant_f16(143, dblob, F * H, dhf, s);
++        sk::iq_dequant_gu_f16(143, dblob, (const uint8_t*) dblob + L.up_off, F, H, dgu, s);
++        cudaStreamSynchronize(s);
++        std::vector<float> gotf((size_t) F * H);
++        std::vector<uint16_t> goth((size_t) F * H), gotgu((size_t) 2 * F * H);
++        cudaMemcpy(gotf.data(), dqf, gotf.size() * 4, cudaMemcpyDeviceToHost);
++        cudaMemcpy(goth.data(), dhf, goth.size() * 2, cudaMemcpyDeviceToHost);
++        cudaMemcpy(gotgu.data(), dgu, gotgu.size() * 2, cudaMemcpyDeviceToHost);
++        cudaFree(dqf);
++        cudaFree(dhf);
++        cudaFree(dgu);
++        std::memcpy(Gw.data(), gotf.data(), Gw.size() * 4);
++        const double rd = rel(Gw, G);
++        size_t differ = 0, h_differ = 0, gu_differ = 0;
++        for (size_t i = 0; i < gotf.size(); ++i) {
++            differ += std::memcmp(&gotf[i], &G[i], 4) != 0;
++            h_differ += goth[i] != ggml_fp32_to_fp16(G[i]);
++        }
++        for (int64_t r = 0; r < F; ++r) {
++            for (int64_t i = 0; i < H; ++i) {
++                gu_differ += gotgu[(size_t) ((2 * r) * H + i)] != ggml_fp32_to_fp16(G[(size_t) (r * H + i)]);
++                gu_differ += gotgu[(size_t) ((2 * r + 1) * H + i)] != ggml_fp32_to_fp16(U[(size_t) (r * H + i)]);
++            }
++        }
++        std::printf("GPU: dequant f32 rel %.2e (%zu of %lld differ), f16 %zu differ, gate/up fp16 rows %zu differ\n",
++                    rd, differ, (long long) (F * H), h_differ, gu_differ);
++        if (!(rd < 1e-7) || differ || h_differ || gu_differ) ++failures;
++    }
++
++    cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
++    cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
++    cudaStreamDestroy(s);
++
++    std::printf("PTQ1_0 parity: %d failures\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/src/prefill/kernels.cu b/src/prefill/kernels.cu
+index 35a15621..5d53fc3e 100644
+--- a/src/prefill/kernels.cu
++++ b/src/prefill/kernels.cu
+@@ -2471,11 +2471,13 @@ __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__
+     q[i] = qf[t * 24 * 512 + h * 512 + d];
+ }
+ __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __restrict__ qf, uint16_t* __restrict__ o16,
+-                                 int64_t T, int64_t ld16) {
++                                 float* __restrict__ o32, int64_t T, int64_t ld16) {
+     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+     if (i >= T * 24 * 256) return;
+     const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
+-    o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d]))));
++    const float g = a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d])));
++    if (o32 != nullptr) o32[i] = g;   // the correction branches read the f32 post-gate value
++    o16[t * ld16 + h * 256 + d] = hf(g);
+ }
+ 
+ // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
+@@ -3401,8 +3403,9 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
+     split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+     check("split_q");
+ }
+-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
+-    gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
++void gate_attn(const float* attn, const float* q_full, uint16_t* out16, float* out32, int64_t T, void* stream,
++               int64_t ld16) {
++    gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, out32, T,
+                                                                                 ld16 > 0 ? ld16 : 24 * 256);
+     check("gate_attn");
+ }
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index 0f2c410c..68f802a5 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -39,6 +39,7 @@
+ #include "strata/kernels/kv_q4.hpp"
+ #include "strata/core/layer.hpp"
+ #include "strata/core/native_dense.hpp"
++#include "strata/core/corrections.hpp"
+ #include "strata/core/native_head.hpp"
+ #include "strata/kernels/verify_kernels.hpp"
+ #include "strata/kernels/qsa_decode_attn.hpp"
+@@ -1073,6 +1074,8 @@ struct Prefill::Impl {
+     bool xn_f16 = false;   // Turing, BF16 on FP16 tensor cores: xn16 written as the FP16 values the GEMM would convert
+     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr;   // bf16x2(): the BF16 GEMMs' low parts
+     float* bo = nullptr;
++    uint16_t* corr_t16 = nullptr;            // T * kLoraCorrMaxRank f16: the correction branches' rank scratch
++    uint16_t* corr_x16 = nullptr;            // min(T, kLoraCorrRoundRows) * max_in: the corrections' f16 x scratch
+     // GDN
+     float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
+     uint16_t* y_h = nullptr;
+@@ -1936,6 +1939,12 @@ bool Prefill::carve(size_t T, void* alloc) {
+     m.mixed_h = o.take<uint16_t>(T * N, ok);
+     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
+     m.bo = m.emb;
++    m.corr_t16 = o.take<uint16_t>(T * (size_t) strata::kernels::kLoraCorrMaxRank, ok);
++    {
++        const uint64_t corr_in = std::max({(uint64_t) g.n_embd, (uint64_t) g.ssm_value_dim,
++                                           (uint64_t) g.n_head * (uint64_t) g.head_dim});
++        m.corr_x16 = o.take<uint16_t>(std::min<uint64_t>(T, (uint64_t) strata::kernels::kLoraCorrRoundRows) * corr_in, ok);
++    }
+     if (!hcr && bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
+     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
+     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
+@@ -2767,10 +2776,11 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
+     if (gemm_dequant_side()) o.take<uint16_t>((size_t) GEMM_SCRATCH, ok);   // STRATA_DEQUANT_SIDE: the second scratch
+     auto f = [&](size_t n) { o.take<float>(n, ok); };
+     // `carve`'s order, buffer for buffer: emb, R, xn, grs, xn16, lo, lo16, gated, inj, mixed, mixed_bf, mixed_h,
+-    // bo aliases emb. This counted `xn` unconditionally (carve takes it only under STRATA_GR_UNFUSED) and never counted
+-    // `grs`.  Net over-count T*(D-HC)*4 bytes: 42 MB at a 1024-token chunk, 252 MB (48 Q8_0 slots) at 6144 - the
+-    // prompt path was told it had less room than it did.  Safe - the direction is over-estimating, and `take`
+-    // still bounds-checks - but it under-sizes every loan, so every chunk the scan picks is one step smaller.
++    // bo aliases emb, then the corrections' t16/x16. This counted `xn` unconditionally (carve takes it only under
++    // STRATA_GR_UNFUSED) and never counted `grs`.  Net over-count T*(D-HC)*4 bytes: 42 MB at a 1024-token chunk,
++    // 252 MB (48 Q8_0 slots) at 6144 - the prompt path was told it had less room than it did.  Safe - the
++    // direction is over-estimating, and `take` still bounds-checks - but it under-sizes every loan, so every
++    // chunk the scan picks is one step smaller.
+     if (ring_bytes_on()) {
+         f(T * N); f(T * D);
+         if (gr_unfused()) f(T * D);
+@@ -2782,6 +2792,12 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
+     if (!hcr) { o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); f(T * LR); o.take<uint16_t>(T * LR, ok); f(T * D); }
+     f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok);
+     if (!emb_reuse_account()) f(T * N);   // bo: aliases emb in carve; still counted unless STRATA_EMB_REUSE_ACCOUNT=1
++    o.take<uint16_t>(T * (size_t) strata::kernels::kLoraCorrMaxRank, ok);
++    {
++        const uint64_t corr_in = std::max({(uint64_t) g.n_embd, (uint64_t) g.ssm_value_dim,
++                                           (uint64_t) g.n_head * (uint64_t) g.head_dim});
++        o.take<uint16_t>(std::min<uint64_t>(T, (uint64_t) strata::kernels::kLoraCorrRoundRows) * corr_in, ok);
++    }
+     const bool f16_io = prompt_f16();   // the current device's mode (the stage's), as Prefill::init will decide it
+     if (!hcr && bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
+     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
+@@ -4125,8 +4141,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                         gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs,
+                                        ld_y);
+                     pt.mark(kPfGdnOut, cs);
+-                    if (!kva_state_only)   // KVA: the out projection feeds only the residual write and the MoE half
++                    if (!kva_state_only) {   // KVA: the out projection feeds only the residual write and the MoE half
+                         if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err, 0, ld_y)) return false;
++                        if (!core::corr_apply(*m.wt, g, l, core::CorrSite::SsmOut, T, m.y, m.corr_x16, m.corr_t16, m.bo, m.cs, err)) return false;
++                    }
+                     ++gdn_index;
+                     if (kva_state_only) {
+                         // the layer consumed no expert: its stream entries must still be released, or the issuer
+@@ -4386,7 +4404,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                     // V dequantized from its q4_0 blocks to fp16 at gather)
+                     static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+                     const int64_t ld_a = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
+-                    const bool gated = !old_attn && !st.kv_rot && !st.kv_hybrid && qsa_fuse_gate() &&
++                    // The fused attention epilogue writes only the f16 o-projection input; a layer with an
++                    // attn_output correction also needs the post-gate value in f32, so it takes gate_attn.
++                    const bool gated = !old_attn && !st.kv_rot && !st.kv_hybrid &&
++                                       v.get("attn_output.weight.lora_a") == nullptr && qsa_fuse_gate() &&
+                                        strata::kernels::qsa_prompt_attn_batch_gated(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.Qf,
+                                                                                     m.attn_h, ld_a > 0 ? ld_a : ZV, T, m.cs);
+                     {
+@@ -4417,8 +4438,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                         }
+                     if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
+                     pt.mark(kPfQsa, cs);
+-                    if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
++                    if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, m.attn, T, m.cs, ld_a);
+                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err, 0, ld_a)) return false;
++                    if (!core::corr_apply(*m.wt, g, l, core::CorrSite::AttnOutput, T, m.attn, m.corr_x16, m.corr_t16, m.bo, m.cs, err)) return false;
+                     ++qsa_index;
+                     if (!kv_prefetch_after(l + 1, qsa_index)) return false;
+                 } else {
+@@ -5918,6 +5940,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                     else
+                         moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs,
+                                     use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off ? m.row_sd : nullptr);
++                    if (!core::corr_apply(*m.wt, g, l, core::CorrSite::FfnMoeOut, T, m.mixed, m.corr_x16, m.corr_t16, m.bo, m.cs, err)) return false;
+                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
+                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
+                         cudaStreamSynchronize(m.cs);
+@@ -6368,6 +6391,18 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
+     }
+ #endif
+     const core::ModelGeometry& g = *m.g;
++    // The layer-major walk has no correction hooks (the embedded Scion branches are applied by run_impl and the
++    // verify path only).  Refuse the walk rather than produce uncorrected logits; chunk-major handles the pack.
++    if (m.wt != nullptr) {
++        for (int64_t l = 0; l < g.n_layers; ++l) {
++            const core::LayerView v(*m.wt, l);
++            if (v.get("ffn_moe_out.weight.lora_a") != nullptr || v.get("ssm_out.weight.lora_a") != nullptr ||
++                v.get("attn_output.weight.lora_a") != nullptr) {
++                why = "the embedded correction branches (no layer-major hooks)";
++                return 0;
++            }
++        }
++    }
+     const core::OnDevice on_device(m.device);   // a layer split's later stage is sized on its own GPU
+     // layer split (2026-10-24): each stage runs its own layers layer-major over the same super-chunk and hands the
+     // super-chunk's rows to the next one (lm_prepare_chain); the peer GPU's expert share and the stage helper have
+@@ -7526,7 +7561,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
+                             }
+                         if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, cs);
+                         pt.mark(kPfQsa, cs);
+-                        if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, cs);
++                        if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, nullptr, T, cs);
+                         if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;
+                         ++qsa_index;
+                     } else {
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index e2657ae2..ecc827e0 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -48,6 +48,7 @@
+ #include "strata/core/on_device.hpp"
+ #include "strata/core/peer_experts.hpp"
+ #include "strata/core/layer.hpp"
++#include "strata/core/corrections.hpp"
+ #include "strata/core/layout.hpp"
+ #include "strata/core/session.hpp"
+ #include "strata/core/weights.hpp"
+@@ -4929,6 +4930,17 @@ int main(int argc, char** argv) {
+                          "skipped: served natively)\n",
+                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
+     mem_mark("the pack weights");
++    {
++        // The embedded adapter of a Scion release: every blk.N.<site>.weight.lora_{a,b} pair is checked here,
++        // before a token runs, and applied at the block outputs by the layer/prefill/verify paths.
++        int corr_branches = 0;
++        if (!strata::core::corr_validate(wt, g, corr_branches, err)) {
++            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
++            return 1;
++        }
++        if (corr_branches > 0)
++            std::fprintf(stderr, "strata generate: %d embedded correction branches will be applied\n", corr_branches);
++    }
+ 
+     strata::core::NativeDense native_dense;
+     if (!o.native_dense_gguf.empty()) {
+@@ -5504,6 +5516,13 @@ int main(int argc, char** argv) {
+             const int64_t le = stage_trim ? (i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers) : 0;
+             if (!load_stage_weights(st, lb, le, stage_trim)) return 1;
+         }
++        {
++            int corr_branches = 0;
++            if (!strata::core::corr_validate(st.wt, g, corr_branches, err)) {
++                std::fprintf(stderr, "strata generate: layer split, CUDA%d corrections: %s\n", st.dev, err.c_str());
++                return 1;
++            }
++        }
+         // THE SESSION AND THE HEAD WAIT FOR THE SPLIT SEARCH.  `session_bytes` prices a stage's session by its
+         // LAYER RANGE (the carve - every stage used to hold all 48 layers' state whatever it ran), so the
+         // sessions are allocated after the search below has set `st.lb`/`st.le`; the last stage's head follows.
+diff --git a/third_party/ggml/ggml-common.h b/third_party/ggml/ggml-common.h
+index ca283d18..59788c4b 100644
+--- a/third_party/ggml/ggml-common.h
++++ b/third_party/ggml/ggml-common.h
+@@ -99,6 +99,9 @@ typedef sycl::half2 ggml_half2;
+ #define QI2_0 (QK2_0 / 32)
+ #define QR2_0 1
+ 
++#define QI_PTQ1_0 (QK_PTQ1_0 / 32)
++#define QR_PTQ1_0 1
++
+ 
+ #define QI4_0 (QK4_0 / (4 * QR4_0))
+ #define QR4_0 2
+@@ -191,6 +194,16 @@ typedef struct {
+ } block_q2_0;
+ static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
+ 
++// PTQ1_0 (Scion type 143): ternary at group size 128 with one fp16 scale per block, 'qs' and 'qh' carrying
++// five / four trits per byte in base 3 (the TQ1_0 packing; the fork's ggml-common.h, commit 01fd9521c).
++#define QK_PTQ1_0 128
++typedef struct {
++    uint8_t qs[(QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5]; // 24 B, 5 trits per byte -> 120 values
++    uint8_t qh[QK_PTQ1_0/64];                   //  2 B, 4 trits per byte ->   8 values
++    ggml_half d;                                // scale
++} block_ptq1_0;
++static_assert(sizeof(block_ptq1_0) == sizeof(ggml_half) + QK_PTQ1_0/64 + (QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5, "wrong ptq1_0 block size/padding");
++
+ #define QK4_0 32
+ typedef struct {
+     ggml_half d;           // delta
