@@ -6,7 +6,7 @@
 > prefill. Upstream v0.2.10 has no Scion kernels. Build, test and branch policy:
 > [`PORTING.md`](PORTING.md) · [`porting/scion-0.2.10/`](porting/scion-0.2.10/).
 > 35B Scion support remains on the legacy `scion-0.1.44` branch. This is not an
-> upstream release, and it is not the separate `Strata-Lite` fork.
+> upstream release, and it is not the separate `Strata-Lite (WIP)` fork.
 
 <p align="center">
   <picture>
