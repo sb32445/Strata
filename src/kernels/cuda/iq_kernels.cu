@@ -3568,7 +3568,7 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
 // expert, 31 us for the down; writing the FP16 alone would take about 15 and 7 us at 504 GB/s).  Here a CUDA block holds four
 // superblocks and a thread decodes its eight values from ONE source run (they share the trit index n and consecutive source bytes)
 // and writes them with one 16-byte store.  Same arithmetic as dq_ptq1_0: v = uint8(byte * 3^n), value = d * (float)((v * 3 >> 8) - 1),
-// round-to-nearest to half.  STRATA_PTQ1_DEQ_OLD=1 keeps the generic kernels (A/B, fallback).
+// round-to-nearest to half.  The generic kernels stay the default; STRATA_PTQ1_DEQ_NEW=1 (opt-in) selects these.
 __device__ __forceinline__ uint4 ptq1_decode8_half(const block_ptq1_0& x, int part) {
     const float d = __half2float(x.d);
     uint32_t w[4];
@@ -3608,11 +3608,11 @@ __global__ void dequant_gu_ptq1_kernel(const block_ptq1_0* __restrict__ gate, co
     const block_ptq1_0* x = parity ? up : gate;
     *reinterpret_cast<uint4*>(y + ((2 * r + parity) * per_row + c) * 256 + b * 128 + part * 8) = ptq1_decode8_half(x[i * 2 + b], part);
 }
-inline bool ptq1_deq_old() {
-    static const bool on = std::getenv("STRATA_PTQ1_DEQ_OLD") != nullptr;
+inline bool ptq1_deq_new() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_PTQ1_DEQ_NEW"); return e != nullptr && *e != 0 && !(e[0] == '0' && e[1] == 0); }();
     return on;
 }
-// STRATA_PTQ1_DEQ_VERIFY=1 (measurement only): after every A4 launch the generic kernel writes the same output into a scratch buffer and
+// STRATA_PTQ1_DEQ_VERIFY=1 (measurement only, needs STRATA_PTQ1_DEQ_NEW=1): after every A4 launch the generic kernel writes the same output into a scratch buffer and
 // a compare kernel counts the differing 32-bit words on the device; counts go to stderr (every 2000 calls and at the first mismatch).
 // It synchronizes the stream on every call, so it is slow.
 inline bool ptq1_deq_verify() {
@@ -5661,7 +5661,7 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream, const float* scale) {
     if (n % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
-    if (t == 143 && scale == nullptr && !ptq1_deq_old()) {   // A4
+    if (t == 143 && scale == nullptr && ptq1_deq_new()) {   // A4
         const int64_t n_super = n / 256;
         dequant_flat_ptq1_kernel<<<(unsigned) ((n_super + 3) / 4), 128, 0, (cudaStream_t) stream>>>((const block_ptq1_0*) src, (__half*) dst, n_super);
         check("iq_dequant_f16");
@@ -5706,7 +5706,7 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
     if (n_embd % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
     const int64_t per_row = n_embd / 256;
-    if (t == 143 && tail == nullptr && !ptq1_deq_old()) {   // A4
+    if (t == 143 && tail == nullptr && ptq1_deq_new()) {   // A4
         const int64_t n_super = n_ff * per_row;
         dequant_gu_ptq1_kernel<<<dim3((unsigned) ((n_super + 3) / 4), 2), 128, 0, (cudaStream_t) stream>>>(
             (const block_ptq1_0*) gate, (const block_ptq1_0*) up, per_row, n_super, (__half*) dst);
