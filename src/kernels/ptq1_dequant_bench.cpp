@@ -1,6 +1,6 @@
 // ptq1_dequant_bench: time and checksum of the PTQ1_0 -> FP16 prompt-path dequantizers (iq_dequant_gu_f16 / iq_dequant_f16) on one
 // expert's shape (gate/up 640 x 2560, down 2560 x 640), random weight blocks with finite fp16 scales.  No model needed.
-// Run twice - as is (A4 kernels) and with STRATA_PTQ1_DEQ_OLD=1 (generic kernels) - and compare the checksums: they must be equal.
+// Run twice - as is (generic kernels) and with STRATA_PTQ1_DEQ_NEW=1 (A4 kernels) - and compare the checksums: they must be equal.
 #include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_runtime.h>
