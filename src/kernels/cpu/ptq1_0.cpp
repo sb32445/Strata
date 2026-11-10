@@ -161,7 +161,8 @@ void ptq1_0_down_rows_scalar(const uint8_t* blob, size_t d_row, int n, const voi
 
 bool ptq1_0_avx2_active() {
 #if defined(__x86_64__) || defined(_M_X64)
-    static const bool on = cpu_avx2_ok() && std::getenv("STRATA_PTQ1_SCALAR") == nullptr;
+    // opt-in: the scalar rows stay the default; STRATA_PTQ1_AVX2=1 selects the AVX2 rows (bit-identical results) where cpu_avx2_ok()
+    static const bool on = cpu_avx2_ok() && []{ const char* e = std::getenv("STRATA_PTQ1_AVX2"); return e != nullptr && *e != 0 && std::strcmp(e, "0") != 0; }();
     return on;
 #else
     return false;
@@ -170,7 +171,7 @@ bool ptq1_0_avx2_active() {
 
 #if defined(__x86_64__) || defined(_M_X64)
 namespace {
-// STRATA_PTQ1_VERIFY=1 (measurement only): every entry-point call runs the AVX2 rows AND the scalar rows on the same real inputs
+// STRATA_PTQ1_VERIFY=1 (measurement only, needs STRATA_PTQ1_AVX2=1): every entry-point call runs the AVX2 rows AND the scalar rows on the same real inputs
 // and compares the outputs bit for bit; counts and the first mismatches go to stderr.  Runs at scalar speed.
 const bool g_verify = std::getenv("STRATA_PTQ1_VERIFY") != nullptr;
 std::atomic<long> g_calls{0}, g_bad{0}, g_rows{0};

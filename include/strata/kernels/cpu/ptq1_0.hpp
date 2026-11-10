@@ -12,8 +12,8 @@
 
 namespace strata::kernels::cpu {
 
-// The entry points pick AVX2 rows (ptq1_0_avx2.cpp, bit-identical results) where cpu_avx2_ok(), else the scalar rows.
-// STRATA_PTQ1_SCALAR=1 forces the scalar rows (A/B runs, fallback).
+// The entry points run the scalar rows by default. STRATA_PTQ1_AVX2=1 (opt-in) selects the AVX2 rows (ptq1_0_avx2.cpp,
+// bit-identical results) where cpu_avx2_ok().
 void ptq1_0_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                     int nt, float* const* ff, int r0, int r1);
 void ptq1_0_down_rows(const uint8_t* blob, size_t d_row, int n, const void* const* hq,
